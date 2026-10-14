@@ -9,8 +9,9 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-# Set target timezone strictly to GMT+8 (Philippines / Local Time)
-TZ_GMT8 = timezone(timedelta(hours=8))
+# Define Timezones
+TZ_CEST = timezone(timedelta(hours=2)) # MuhRO Server Time (German CEST)
+TZ_GMT8 = timezone(timedelta(hours=8)) # Philippines / Local Time
 
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
@@ -27,37 +28,32 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# Known MVP Respawn Delays in Minutes (Default: 60)
-MVP_SPAWN_DELAYS = {
-    "Gopinich": 120,      # Gopinich (2 Hours)
-    "Randgris": 480,      # Valkyrie Randgris (8 Hours)
-    "Valkyrie": 480,
-    "Ifrit": 660,         # Ifrit (11 Hours)
-    "Beelzebub": 720,     # Beelzebub (12 Hours)
-    "Lord of Death": 120, # Lord of Death (2 Hours)
-    "Tao Gunka": 300,     # Tao Gunka (5 Hours)
-    "Baphomet": 120,      # Baphomet (2 Hours)
-    "Pharaoh": 60,
-    "Drake": 120,
-    "Osiris": 60,
-    "Edgga": 120,
-    "Maya": 120,
-    "Phreeoni": 120,
-    "Doppelganger": 120,
-    "Orc Hero": 60,
-    "Orc Lord": 120,
-}
-
 # ==========================================
-# HELPER: GMT+8 TIME CALCULATION
+# HELPER: ACCURATE TIME & TIMEZONE PARSER
 # ==========================================
-def parse_relative_time_to_dt(time_str):
+def parse_fluxcp_time_to_gmt8(time_str):
     """
-    Parses relative time strings ('10 minutes ago', '2 hours') 
-    by subtracting the parsed duration directly from the current GMT+8 time.
+    Parses FluxCP timestamps.
+    Converts Server Time (GMT+2 CEST) -> GMT+8 (+6 hours difference).
+    Falls back to relative subtraction if string is 'X mins ago'.
     """
     now_gmt8 = datetime.now(TZ_GMT8)
     
+    # 1. Try parsing exact HH:MM:SS format
+    time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
+    if time_match:
+        h, m, s = map(int, time_match.groups())
+        
+        now_cest = datetime.now(TZ_CEST)
+        kill_dt_cest = now_cest.replace(hour=h, minute=m, second=s, microsecond=0)
+        
+        # Midnight rollover handling
+        if kill_dt_cest > now_cest:
+            kill_dt_cest -= timedelta(days=1)
+            
+        return kill_dt_cest.astimezone(TZ_GMT8)
+
+    # 2. Check for relative durations ('10 minutes ago', '2 hours ago')
     hours = re.search(r'(\d+)\s*(?:hour|hr)', time_str, re.IGNORECASE)
     minutes = re.search(r'(\d+)\s*(?:min|minute)', time_str, re.IGNORECASE)
     seconds = re.search(r'(\d+)\s*(?:sec|second)', time_str, re.IGNORECASE)
@@ -68,19 +64,48 @@ def parse_relative_time_to_dt(time_str):
 
     if h_val or m_val or s_val:
         return now_gmt8 - timedelta(hours=h_val, minutes=m_val, seconds=s_val)
-    
+
     return now_gmt8
 
-def calculate_spawn_time(mvp_name, death_dt):
-    """Calculates estimated spawn timestamp based on known spawn windows."""
-    delay_minutes = 60
-    for key, delay in MVP_SPAWN_DELAYS.items():
-        if key.lower() in mvp_name.lower():
-            delay_minutes = delay
-            break
+def parse_duration_to_minutes(text):
+    """Extracts total minutes from strings like '1 hour 10 minutes' or '2 hours'."""
+    hours = re.search(r'(\d+)\s*(?:hour|hr)', text, re.IGNORECASE)
+    minutes = re.search(r'(\d+)\s*(?:min|minute)', text, re.IGNORECASE)
+    
+    h_val = int(hours.group(1)) if hours else 0
+    m_val = int(minutes.group(1)) if minutes else 0
+    
+    return (h_val * 60) + m_val
 
-    estimated_spawn_dt = death_dt + timedelta(minutes=delay_minutes)
-    return estimated_spawn_dt.strftime("%Y-%m-%d %H:%M:%S")
+def calculate_spawn_range(death_dt, respawn_text):
+    """
+    Calculates estimated spawn window directly from the web table string.
+    Handles ranges like '1 hour - 1 hour 10 minutes' or static delays like '2 hours'.
+    """
+    if not respawn_text or "N/A" in respawn_text.upper():
+        est_dt = death_dt + timedelta(minutes=60)
+        return f"⏳ **{est_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
+
+    parts = respawn_text.split("-")
+    
+    if len(parts) == 2:
+        min_delay = parse_duration_to_minutes(parts[0])
+        max_delay = parse_duration_to_minutes(parts[1])
+        
+        # If min delay parsing yields 0 (e.g., shorthand '1 hour - 1 hour 10 min'), fall back to max
+        if min_delay == 0:
+            min_delay = max_delay
+
+        min_spawn = (death_dt + timedelta(minutes=min_delay)).strftime("%H:%M:%S")
+        max_spawn = (death_dt + timedelta(minutes=max_delay)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        return f"⏳ **{min_spawn} ~ {max_spawn}**"
+    else:
+        delay = parse_duration_to_minutes(respawn_text)
+        if delay == 0:
+            delay = 60 # Default fallback
+        spawn_dt = death_dt + timedelta(minutes=delay)
+        return f"⏳ **{spawn_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
 
 # ==========================================
 # KEEP-ALIVE WEB SERVER FOR RENDER
@@ -91,7 +116,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Webhook connected. Monitoring every 60s (GMT+8)!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Dynamic Respawn Tracker connected (GMT+8)!")
     httpd.serve_forever()
 
 # ==========================================
@@ -133,28 +158,25 @@ def check_mvp_kills():
             for row in rows:
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
-                if len(cols) >= 3:
-                    if "MVP" in cols[0] or "Map" in cols[0] or not cols[0]:
+                if len(cols) >= 4:
+                    if "MVP" in cols[0] or "Monster" in cols[0] or not cols[0]:
                         continue
 
+                    # Table structure: [Monster, Map Location, Respawn, Last Killer, Time...]
                     mvp_name = cols[0]
+                    map_name = cols[1]
+                    respawn_text = cols[2]
+                    killer_name = cols[-2]
                     raw_time = cols[-1]
-                    
-                    if len(cols) == 3:
-                        killer_name = cols[1]
-                    elif len(cols) == 4:
-                        killer_name = cols[2]
-                    else:
-                        killer_name = cols[-2]
 
-                    # Column swap correction
-                    if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago"]):
+                    # Index sanity check if columns swap or adjust
+                    if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
                         killer_name, raw_time = raw_time, killer_name
 
-                    # Calculate Exact Timestamps anchored strictly to current GMT+8 execution time
-                    death_dt = parse_relative_time_to_dt(raw_time)
+                    # Process timestamps
+                    death_dt = parse_fluxcp_time_to_gmt8(raw_time)
                     time_of_death = death_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    est_spawn_time = calculate_spawn_time(mvp_name, death_dt)
+                    est_spawn_str = calculate_spawn_range(death_dt, respawn_text)
 
                     parsed_count += 1
                     kill_id = f"{mvp_name}_{killer_name}_{raw_time}"
@@ -164,15 +186,16 @@ def check_mvp_kills():
                         
                         if not warmup_mvp:
                             new_alerts_sent += 1
-                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} by {killer_name}")
+                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name}")
                             embed = [{
                                 "title": "⚔️ MVP Down!",
                                 "color": 15158332,
                                 "fields": [
                                     {"name": "MVP", "value": mvp_name, "inline": True},
                                     {"name": "Killed By", "value": killer_name, "inline": True},
+                                    {"name": "Map", "value": map_name, "inline": True},
                                     {"name": "Time of Death (GMT+8)", "value": time_of_death, "inline": False},
-                                    {"name": "Est. Spawn Time (GMT+8)", "value": f"⏳ **{est_spawn_time}**", "inline": False}
+                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
                                 ]
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
@@ -194,7 +217,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("      MuhRO MVP Tracker (60s Loop | Local GMT+8)")
+    print("   MuhRO MVP Tracker (Dynamic Web Respawn | GMT+8)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
