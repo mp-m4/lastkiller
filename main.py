@@ -141,4 +141,90 @@ def send_discord_alert(content, embeds=None):
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
-    headers = {"User-Agent": "Mozilla/5.0 (Windows
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    try:
+        logging.info("🔍 Scraping FluxCP MVP rankings...")
+        res = requests.get(MVP_LOG_URL, headers=headers, timeout=15)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            rows = soup.find_all("tr")
+            parsed_count = 0
+            new_alerts_sent = 0
+            
+            for row in rows:
+                cols = [" ".join(td.text.split()) for td in row.find_all("td")]
+                
+                if len(cols) >= 4:
+                    if "MVP" in cols[0] or "Monster" in cols[0] or not cols[0]:
+                        continue
+
+                    mvp_name = cols[0]
+                    map_name = cols[1]
+                    respawn_text = cols[2]
+                    killer_name = cols[-2]
+                    raw_time = cols[-1]
+
+                    if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
+                        killer_name, raw_time = raw_time, killer_name
+
+                    # 1. Parse into a converted GMT+8 datetime object
+                    death_dt_gmt8 = parse_fluxcp_time_to_gmt8(raw_time)
+                    
+                    # 2. Format the GMT+8 object for Time of Death display
+                    time_of_death_gmt8 = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # 3. Calculate Spawn Range formatted as YYYY-MM-DD HH:MM:SS ~ YYYY-MM-DD HH:MM:SS
+                    est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
+
+                    parsed_count += 1
+                    kill_id = f"{mvp_name}_{killer_name}_{raw_time}"
+
+                    if kill_id not in seen_mvp_kills:
+                        seen_mvp_kills.add(kill_id)
+                        
+                        if not warmup_mvp:
+                            new_alerts_sent += 1
+                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name}")
+                            embed = [{
+                                "title": "⚔️ MVP Down!",
+                                "color": 15158332,
+                                "fields": [
+                                    {"name": "MVP", "value": mvp_name, "inline": True},
+                                    {"name": "Killed By", "value": killer_name, "inline": True},
+                                    {"name": "Map", "value": map_name, "inline": True},
+                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_gmt8, "inline": False},
+                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
+                                ]
+                            }]
+                            send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
+
+            if len(seen_mvp_kills) > 300:
+                seen_mvp_kills.clear()
+
+            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
+
+            if warmup_mvp:
+                warmup_mvp = False
+                logging.info("✅ Warm-up complete. Initial logs cached silently.")
+
+    except Exception as e:
+        logging.error(f"Error checking MVP kills: {e}")
+
+# ==========================================
+# MAIN EXECUTION ENTRYPOINT
+# ==========================================
+if __name__ == "__main__":
+    print("==================================================")
+    print("   MuhRO MVP Tracker (Full Date Range | GMT+8)")
+    print("==================================================")
+
+    server_thread = threading.Thread(target=run_web_server, daemon=True)
+    server_thread.start()
+
+    check_mvp_kills()
+
+    while True:
+        time.sleep(60)
+        check_mvp_kills()
