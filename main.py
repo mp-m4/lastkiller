@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-# Set target timezone to GMT+8
+# Set target timezone strictly to GMT+8 (Philippines / Local Time)
 TZ_GMT8 = timezone(timedelta(hours=8))
 
 # ==========================================
@@ -29,6 +29,7 @@ logging.basicConfig(
 
 # Known MVP Respawn Delays in Minutes (Default: 60)
 MVP_SPAWN_DELAYS = {
+    "Gopinich": 120,      # Gopinich (2 Hours)
     "Randgris": 480,      # Valkyrie Randgris (8 Hours)
     "Valkyrie": 480,
     "Ifrit": 660,         # Ifrit (11 Hours)
@@ -51,7 +52,10 @@ MVP_SPAWN_DELAYS = {
 # HELPER: GMT+8 TIME CALCULATION
 # ==========================================
 def parse_relative_time_to_dt(time_str):
-    """Parses relative time strings into a datetime object in GMT+8 timezone."""
+    """
+    Parses relative time strings ('10 minutes ago', '2 hours') 
+    by subtracting the parsed duration directly from the current GMT+8 time.
+    """
     now_gmt8 = datetime.now(TZ_GMT8)
     
     hours = re.search(r'(\d+)\s*(?:hour|hr)', time_str, re.IGNORECASE)
@@ -147,7 +151,7 @@ def check_mvp_kills():
                     if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago"]):
                         killer_name, raw_time = raw_time, killer_name
 
-                    # Calculate Exact Timestamps in GMT+8
+                    # Calculate Exact Timestamps anchored strictly to current GMT+8 execution time
                     death_dt = parse_relative_time_to_dt(raw_time)
                     time_of_death = death_dt.strftime("%Y-%m-%d %H:%M:%S")
                     est_spawn_time = calculate_spawn_time(mvp_name, death_dt)
@@ -190,7 +194,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("      MuhRO MVP Tracker (60s Loop | GMT+8)")
+    print("      MuhRO MVP Tracker (60s Loop | Local GMT+8)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
