@@ -16,7 +16,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com
 # MuhRO MVP Ranking URL
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 
-# Set memory cache to track seen kills and prevent duplicate alerts
+# Global state memory to prevent duplicate alerts
 seen_mvp_kills = set()
 warmup_mvp = True
 
@@ -55,6 +55,7 @@ def send_discord_alert(content, embeds=None):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
+        logging.info("🚀 Discord Webhook alert sent successfully!")
     except Exception as e:
         logging.error(f"Failed to send Discord alert: {e}")
 
@@ -66,12 +67,13 @@ def check_mvp_kills():
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     try:
+        logging.info("🔍 Scraping FluxCP MVP rankings...")
         res = requests.get(MVP_LOG_URL, headers=headers, timeout=15)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             
             # Select table rows containing MVP kill entries
-            kills = soup.select("table.ranking-table tr, table.horizontal-table tr")
+            kills = soup.select("table.ranking-table tr, table.horizontal-table tr, table tr")
             
             for row in kills:
                 cols = row.find_all("td")
@@ -124,4 +126,4 @@ if __name__ == "__main__":
     # 3. Main Loop: Check for new MVP kills every 5 minutes (300 seconds)
     while True:
         time.sleep(300)
-        check
+        check_mvp_kills()
