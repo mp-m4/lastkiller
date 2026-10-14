@@ -114,7 +114,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Full Date Formatting Applied (GMT+8)!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Strict GMT+8 Time Conversion Applied!")
     httpd.serve_forever()
 
 # ==========================================
@@ -172,10 +172,10 @@ def check_mvp_kills():
                     # 1. Parse into a converted GMT+8 datetime object
                     death_dt_gmt8 = parse_fluxcp_time_to_gmt8(raw_time)
                     
-                    # 2. Format the GMT+8 object for Time of Death display
+                    # 2. Format the GMT+8 object explicitly for Time of Death
                     time_of_death_gmt8 = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                     
-                    # 3. Calculate Spawn Range formatted as YYYY-MM-DD HH:MM:SS ~ YYYY-MM-DD HH:MM:SS
+                    # 3. Calculate Spawn Range formatted in GMT+8
                     est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
 
                     parsed_count += 1
@@ -217,7 +217,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("   MuhRO MVP Tracker (Full Date Range | GMT+8)")
+    print("   MuhRO MVP Tracker (Strict GMT+8 Time Conversion)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
