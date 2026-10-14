@@ -5,9 +5,12 @@ import re
 import logging
 import threading
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+# Set target timezone to GMT+8
+TZ_GMT8 = timezone(timedelta(hours=8))
 
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
@@ -45,11 +48,11 @@ MVP_SPAWN_DELAYS = {
 }
 
 # ==========================================
-# HELPER: TIME CALCULATION
+# HELPER: GMT+8 TIME CALCULATION
 # ==========================================
 def parse_relative_time_to_dt(time_str):
-    """Parses relative time strings ('8 hours 10 minutes') into a datetime object."""
-    now = datetime.now()
+    """Parses relative time strings into a datetime object in GMT+8 timezone."""
+    now_gmt8 = datetime.now(TZ_GMT8)
     
     hours = re.search(r'(\d+)\s*(?:hour|hr)', time_str, re.IGNORECASE)
     minutes = re.search(r'(\d+)\s*(?:min|minute)', time_str, re.IGNORECASE)
@@ -60,9 +63,9 @@ def parse_relative_time_to_dt(time_str):
     s_val = int(seconds.group(1)) if seconds else 0
 
     if h_val or m_val or s_val:
-        return now - timedelta(hours=h_val, minutes=m_val, seconds=s_val)
+        return now_gmt8 - timedelta(hours=h_val, minutes=m_val, seconds=s_val)
     
-    return now
+    return now_gmt8
 
 def calculate_spawn_time(mvp_name, death_dt):
     """Calculates estimated spawn timestamp based on known spawn windows."""
@@ -84,7 +87,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Webhook connected. Monitoring every 60s!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Webhook connected. Monitoring every 60s (GMT+8)!")
     httpd.serve_forever()
 
 # ==========================================
@@ -144,7 +147,7 @@ def check_mvp_kills():
                     if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago"]):
                         killer_name, raw_time = raw_time, killer_name
 
-                    # Calculate Exact Timestamps
+                    # Calculate Exact Timestamps in GMT+8
                     death_dt = parse_relative_time_to_dt(raw_time)
                     time_of_death = death_dt.strftime("%Y-%m-%d %H:%M:%S")
                     est_spawn_time = calculate_spawn_time(mvp_name, death_dt)
@@ -164,8 +167,8 @@ def check_mvp_kills():
                                 "fields": [
                                     {"name": "MVP", "value": mvp_name, "inline": True},
                                     {"name": "Killed By", "value": killer_name, "inline": True},
-                                    {"name": "Time of Death", "value": time_of_death, "inline": False},
-                                    {"name": "Est. Spawn Time", "value": f"⏳ **{est_spawn_time}**", "inline": False}
+                                    {"name": "Time of Death (GMT+8)", "value": time_of_death, "inline": False},
+                                    {"name": "Est. Spawn Time (GMT+8)", "value": f"⏳ **{est_spawn_time}**", "inline": False}
                                 ]
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
@@ -187,7 +190,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("      MuhRO MVP Tracker (60s Fast Loop)")
+    print("      MuhRO MVP Tracker (60s Loop | GMT+8)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
