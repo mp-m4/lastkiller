@@ -10,9 +10,10 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1559883969611304970/AOs1D3e4HwCzgiZPLqvkB6PwFC5cxGJrGVRQ2SjXw4DchV9THkrK3NqAcraTmM-GhazN")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 
+# Global state memory
 seen_mvp_kills = set()
 warmup_mvp = True
 
@@ -30,6 +31,10 @@ def run_web_server():
     server_address = ("0.0.0.0", port)
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
+    
+    # Send test ping to verify Discord webhook on boot
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Webhook connected. Monitoring every 60s!")
+    
     httpd.serve_forever()
 
 # ==========================================
@@ -37,7 +42,7 @@ def run_web_server():
 # ==========================================
 def send_discord_alert(content, embeds=None):
     if not DISCORD_WEBHOOK_URL:
-        logging.warning("DISCORD_WEBHOOK_URL environment variable is missing. Skipping alert.")
+        logging.warning("⚠️ DISCORD_WEBHOOK_URL environment variable is missing!")
         return
 
     payload = {"content": content}
@@ -47,9 +52,9 @@ def send_discord_alert(content, embeds=None):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        logging.info("🚀 Discord Webhook alert sent successfully!")
+        logging.info("🚀 Discord alert delivered!")
     except Exception as e:
-        logging.error(f"Failed to send Discord alert: {e}")
+        logging.error(f"❌ Failed to send Discord alert: {e}")
 
 # ==========================================
 # MVP KILLER MONITORING LOGIC
@@ -64,21 +69,24 @@ def check_mvp_kills():
         
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            
             rows = soup.find_all("tr")
             parsed_count = 0
+            new_alerts_sent = 0
             
             for row in rows:
-                cols = row.find_all("td")
+                cols = [td.text.strip() for td in row.find_all("td")]
+                
                 if len(cols) >= 3:
-                    mvp_name = cols[0].text.strip()
-                    killer_name = cols[1].text.strip()
-                    kill_time = cols[2].text.strip()
-                    
-                    # Ignore empty headers or non-entry rows
-                    if not mvp_name or "MVP" in mvp_name:
+                    # Ignore header or invalid rows
+                    if "MVP" in cols[0] or "Map" in cols[0] or not cols[0]:
                         continue
-                        
+
+                    # Flexible column handling
+                    if len(cols) == 3:
+                        mvp_name, killer_name, kill_time = cols[0], cols[1], cols[2]
+                    else:
+                        mvp_name, killer_name, kill_time = cols[0], cols[-2], cols[-1]
+                    
                     parsed_count += 1
                     kill_id = f"{mvp_name}_{killer_name}_{kill_time}"
 
@@ -86,7 +94,8 @@ def check_mvp_kills():
                         seen_mvp_kills.add(kill_id)
                         
                         if not warmup_mvp:
-                            logging.info(f"🎯 New MVP Kill detected: {kill_id}")
+                            new_alerts_sent += 1
+                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} by {killer_name} ({kill_time})")
                             embed = [{
                                 "title": "⚔️ MVP Down!",
                                 "color": 15158332,
@@ -98,11 +107,15 @@ def check_mvp_kills():
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
 
-            logging.info(f"📊 Processed {parsed_count} MVP entries.")
+            # Prevent memory bloat over long runs
+            if len(seen_mvp_kills) > 300:
+                seen_mvp_kills.clear()
+
+            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
 
             if warmup_mvp:
                 warmup_mvp = False
-                logging.info("✅ MVP Killer warm-up complete. Initial logs cached silently.")
+                logging.info("✅ Warm-up complete. Initial logs cached silently.")
 
     except Exception as e:
         logging.error(f"Error checking MVP kills: {e}")
@@ -112,18 +125,16 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("      MuhRO MVP Killer Tracker Started")
-    print("      Checking every 300 seconds...")
+    print("      MuhRO MVP Tracker (60s Fast Loop)")
     print("==================================================")
 
-    # 1. Start HTTP Server in background
     server_thread = threading.Thread(target=run_web_server, daemon=True)
     server_thread.start()
 
-    # 2. Silent Warm-up
+    # Initial warm-up run
     check_mvp_kills()
 
-    # 3. Main Loop
+    # Fast 60-second polling loop
     while True:
-        time.sleep(300)
+        time.sleep(60)
         check_mvp_kills()
