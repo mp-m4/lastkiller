@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # ---------------- CONFIGURATION ----------------
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1559883969611304970/AOs1D3e4HwCzgiZPLqvkB6PwFC5cxGJrGVRQ2SjXw4DchV9THkrK3NqAcraTmM-GhazN"
 MVP_RANKING_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 
 # Memory tracking to avoid duplicate pings
