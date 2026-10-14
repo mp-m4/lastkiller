@@ -24,6 +24,12 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+# Set up HTTP session with automatic retries for stability
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(max_retries=3)
+session.mount('https://', adapter)
+session.mount('http://', adapter)
+
 # ==========================================
 # HELPER: DIRECT +8 HOURS ADDITION
 # ==========================================
@@ -36,15 +42,12 @@ def get_gmt8_from_scraped_time(time_str):
     if time_match:
         h, m, s = map(int, time_match.groups())
         
-        # Build datetime object using current UTC date
         now = datetime.utcnow()
         scraped_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
         
-        # Add 8 hours directly
         gmt8_dt = scraped_dt + timedelta(hours=8)
         return gmt8_dt
 
-    # Fallback to current UTC + 8 if it's relative like "5 mins ago"
     return datetime.utcnow() + timedelta(hours=8)
 
 def parse_duration_to_minutes(text):
@@ -92,7 +95,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Direct +8 Hours Applied!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: 30s Fast Loop Active!")
     httpd.serve_forever()
 
 # ==========================================
@@ -108,7 +111,7 @@ def send_discord_alert(content, embeds=None):
         payload["embeds"] = embeds
 
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        response = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
         logging.info("🚀 Discord alert delivered!")
     except Exception as e:
@@ -123,7 +126,7 @@ def check_mvp_kills():
 
     try:
         logging.info("🔍 Scraping FluxCP MVP rankings...")
-        res = requests.get(MVP_LOG_URL, headers=headers, timeout=15)
+        res = session.get(MVP_LOG_URL, headers=headers, timeout=10)
         
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
@@ -147,15 +150,13 @@ def check_mvp_kills():
                     if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
                         killer_name, raw_time = raw_time, killer_name
 
-                    # 1. Take scraped time and add strictly 8 hours
                     death_dt_gmt8 = get_gmt8_from_scraped_time(raw_time)
-                    
-                    # 2. Both Time of Death and Spawn Window use this exact object
                     time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                     est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
 
                     parsed_count += 1
-                    kill_id = f"{mvp_name}_{killer_name}_{raw_time}"
+                    # Unique identifier key per kill record
+                    kill_id = f"{mvp_name}_{map_name}_{killer_name}_{raw_time}"
 
                     if kill_id not in seen_mvp_kills:
                         seen_mvp_kills.add(kill_id)
@@ -176,7 +177,8 @@ def check_mvp_kills():
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
 
-            if len(seen_mvp_kills) > 300:
+            # Prevent unneeded memory accumulation while preserving history
+            if len(seen_mvp_kills) > 500:
                 seen_mvp_kills.clear()
 
             logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
@@ -193,7 +195,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("   MuhRO MVP Tracker (Scraped + 8 Hours Direct)")
+    print("   MuhRO MVP Tracker (30s Fast Loop | Auto-Retry)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -202,5 +204,5 @@ if __name__ == "__main__":
     check_mvp_kills()
 
     while True:
-        time.sleep(60)
+        time.sleep(30)  # Polling every 30 seconds
         check_mvp_kills()
