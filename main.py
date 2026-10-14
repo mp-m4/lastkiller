@@ -5,12 +5,9 @@ import re
 import logging
 import threading
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-
-# Define Timezone Offset
-TZ_GMT8 = timezone(timedelta(hours=8)) # Your Philippines Local Time (GMT+8)
 
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
@@ -28,45 +25,27 @@ logging.basicConfig(
 )
 
 # ==========================================
-# HELPER: ACCURATE TIME PARSER
+# HELPER: DIRECT +8 HOURS ADDITION
 # ==========================================
-def parse_fluxcp_time_to_gmt8(time_str):
+def get_gmt8_from_scraped_time(time_str):
     """
-    Parses FluxCP Server timestamps (UTC+0) 
-    and adds strictly +8 hours to match Philippines LOCAL time (GMT+8).
+    Takes the raw website time string (HH:MM:SS), parses it,
+    and adds EXACTLY 8 hours to make it GMT+8.
     """
-    now_gmt8 = datetime.now(TZ_GMT8)
-    
-    # 1. Parse HH:MM:SS from FluxCP Server
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     if time_match:
         h, m, s = map(int, time_match.groups())
         
-        # Get current date in GMT+8 as base
-        base_dt = now_gmt8.replace(hour=h, minute=m, second=s, microsecond=0)
+        # Build datetime object using current UTC date
+        now = datetime.utcnow()
+        scraped_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
         
-        # Convert Server (UTC) -> LOCAL (GMT+8) by adding 8 hours
-        kill_dt_gmt8 = base_dt + timedelta(hours=8)
-        
-        # If adding 8 hours pushes it ahead of current local time, it belongs to yesterday's server cycle
-        if kill_dt_gmt8 > now_gmt8 + timedelta(minutes=5):
-            kill_dt_gmt8 -= timedelta(days=1)
-            
-        return kill_dt_gmt8
+        # Add 8 hours directly
+        gmt8_dt = scraped_dt + timedelta(hours=8)
+        return gmt8_dt
 
-    # 2. Fallback for relative strings ('10 mins ago')
-    hours = re.search(r'(\d+)\s*(?:hour|hr)', time_str, re.IGNORECASE)
-    minutes = re.search(r'(\d+)\s*(?:min|minute)', time_str, re.IGNORECASE)
-    seconds = re.search(r'(\d+)\s*(?:sec|second)', time_str, re.IGNORECASE)
-
-    h_val = int(hours.group(1)) if hours else 0
-    m_val = int(minutes.group(1)) if minutes else 0
-    s_val = int(seconds.group(1)) if seconds else 0
-
-    if h_val or m_val or s_val:
-        return now_gmt8 - timedelta(hours=h_val, minutes=m_val, seconds=s_val)
-
-    return now_gmt8
+    # Fallback to current UTC + 8 if it's relative like "5 mins ago"
+    return datetime.utcnow() + timedelta(hours=8)
 
 def parse_duration_to_minutes(text):
     """Extracts total minutes from strings like '1 hour 10 minutes' or '2 hours'."""
@@ -79,7 +58,7 @@ def parse_duration_to_minutes(text):
     return (h_val * 60) + m_val
 
 def calculate_spawn_range(death_dt_gmt8, respawn_text):
-    """Calculates estimated spawn window using local GMT+8 time."""
+    """Calculates spawn window by adding respawn minutes to death_dt_gmt8."""
     if not respawn_text or "N/A" in respawn_text.upper():
         est_dt = death_dt_gmt8 + timedelta(minutes=60)
         return f"⏳ **{est_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
@@ -113,7 +92,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Server Time + 8 Hours (Exact Local Sync)!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Direct +8 Hours Applied!")
     httpd.serve_forever()
 
 # ==========================================
@@ -168,9 +147,11 @@ def check_mvp_kills():
                     if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
                         killer_name, raw_time = raw_time, killer_name
 
-                    # Direct Conversion: Server (UTC) + 8 Hours = LOCAL Time
-                    death_dt_gmt8 = parse_fluxcp_time_to_gmt8(raw_time)
-                    time_of_death_gmt8 = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
+                    # 1. Take scraped time and add strictly 8 hours
+                    death_dt_gmt8 = get_gmt8_from_scraped_time(raw_time)
+                    
+                    # 2. Both Time of Death and Spawn Window use this exact object
+                    time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                     est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
 
                     parsed_count += 1
@@ -189,7 +170,7 @@ def check_mvp_kills():
                                     {"name": "MVP", "value": mvp_name, "inline": True},
                                     {"name": "Killed By", "value": killer_name, "inline": True},
                                     {"name": "Map", "value": map_name, "inline": True},
-                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_gmt8, "inline": False},
+                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
                                     {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
                                 ]
                             }]
@@ -212,7 +193,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("   MuhRO MVP Tracker (Server + 8 Hours = Local)")
+    print("   MuhRO MVP Tracker (Scraped + 8 Hours Direct)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
