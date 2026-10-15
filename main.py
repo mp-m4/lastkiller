@@ -20,7 +20,7 @@ CACHE_FILE = "seen_kills.txt"
 
 # State Tracking
 seen_mvp_kills = set()
-mvp_database = {}  # In-memory database of latest MVP status entries
+mvp_database = {}  # In-memory database storing MVP status & timestamps
 warmup_mvp = True
 
 logging.basicConfig(
@@ -29,13 +29,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# HTTP Session setup with automatic retries for web scraper
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(max_retries=3)
 session.mount('https://', adapter)
 session.mount('http://', adapter)
 
-# Load existing kill history from disk cache
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
@@ -46,7 +44,6 @@ if os.path.exists(CACHE_FILE):
         logging.error(f"Failed to load cache file: {e}")
 
 def save_cache():
-    """Saves up to 1000 recent kill IDs to disk cache."""
     try:
         with open(CACHE_FILE, "w") as f:
             for kill_id in list(seen_mvp_kills)[-1000:]:
@@ -58,26 +55,23 @@ def save_cache():
 # HELPER FUNCTIONS
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """Parses raw HH:MM:SS string from site and correctly aligns with GMT+8."""
+    """Parses scraped HH:MM:SS string and assigns it to current GMT+8 date."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
+    now_gmt8 = datetime.utcnow() + timedelta(hours=8)
+    
     if time_match:
         h, m, s = map(int, time_match.groups())
-        now_utc = datetime.utcnow()
-        scraped_dt = now_utc.replace(hour=h, minute=m, second=s, microsecond=0)
+        scraped_dt_gmt8 = now_gmt8.replace(hour=h, minute=m, second=s, microsecond=0)
         
-        # Calculate offset target in GMT+8
-        gmt8_dt = scraped_dt + timedelta(hours=8)
-        
-        # Handle midnight rollover edge case
-        if gmt8_dt > (now_utc + timedelta(hours=8.5)):
-            gmt8_dt -= timedelta(days=1)
+        # If scraped hour is greater than current GMT+8 hour, it belonged to yesterday
+        if scraped_dt_gmt8 > now_gmt8:
+            scraped_dt_gmt8 -= timedelta(days=1)
             
-        return gmt8_dt
+        return scraped_dt_gmt8
 
-    return datetime.utcnow() + timedelta(hours=8)
+    return now_gmt8
 
 def parse_duration_to_minutes(text):
-    """Extracts duration in total minutes from strings like '1 hour 10 min'."""
     hours = re.search(r'(\d+)\s*(?:hour|hr)', text, re.IGNORECASE)
     minutes = re.search(r'(\d+)\s*(?:min|minute)', text, re.IGNORECASE)
     h_val = int(hours.group(1)) if hours else 0
@@ -85,9 +79,7 @@ def parse_duration_to_minutes(text):
     return (h_val * 60) + m_val
 
 def calculate_spawn_range_dts(death_dt_gmt8, respawn_text):
-    """Calculates min and max spawn datetime objects."""
     if not respawn_text or "N/A" in respawn_text.upper() or respawn_text.strip() == "0 min":
-        # Immediate or unknown respawn -> minimum delay is 0
         return death_dt_gmt8, death_dt_gmt8
 
     parts = respawn_text.split("-")
@@ -101,16 +93,15 @@ def calculate_spawn_range_dts(death_dt_gmt8, respawn_text):
         return spawn_dt, spawn_dt
 
 def format_spawn_range_str(min_dt, max_dt):
-    """Formats spawn window string for Discord embeds."""
     if min_dt == max_dt:
         return f"⏳ **{min_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
     return f"⏳ **{min_dt.strftime('%Y-%m-%d %H:%M:%S')} ~ {max_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
 
 # ==========================================
-# DISCORD BOT CLIENT (INTERACTIVE SEARCH)
+# DISCORD BOT CLIENT
 # ==========================================
 intents = discord.Intents.default()
-intents.message_content = True  # Requires Message Content Intent enabled in Discord Dev Portal
+intents.message_content = True
 bot_client = discord.Client(intents=intents)
 
 @bot_client.event
@@ -122,18 +113,14 @@ async def on_message(message):
     if message.author == bot_client.user:
         return
 
-    # Debug log
     logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
 
     raw_content = message.content.strip().lower()
-
-    # Strip command prefixes (! or ?)
     query = raw_content.lstrip("!?").strip()
 
     if len(query) < 3:
         return
 
-    # Case-insensitive fuzzy search
     matched_mvp = None
     for mvp_key in mvp_database.keys():
         if query in mvp_key.lower():
@@ -164,9 +151,6 @@ async def on_message(message):
         
         await message.channel.send(embed=embed)
         logging.info(f"✅ Replied with status embed for '{matched_mvp}'")
-    else:
-        if len(mvp_database) > 0:
-            logging.info(f"⚠️ Query '{query}' did not match any MVP in database.")
 
 def run_discord_bot():
     if DISCORD_BOT_TOKEN:
@@ -175,7 +159,7 @@ def run_discord_bot():
         logging.warning("⚠️ DISCORD_BOT_TOKEN missing from environment variables!")
 
 # ==========================================
-# KEEP-ALIVE WEB SERVER FOR RENDER
+# KEEP-ALIVE WEB SERVER
 # ==========================================
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -239,11 +223,12 @@ def check_mvp_kills():
                     min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
                     est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
 
-                    # Update internal state database
+                    # Store exact death_dt_gmt8 timestamp object in state
                     mvp_database[mvp_name] = {
                         "killer_name": killer_name,
                         "map_name": map_name,
                         "time_of_death_str": time_of_death_str,
+                        "death_dt_gmt8": death_dt_gmt8,
                         "est_spawn_str": est_spawn_str,
                         "min_spawn_dt": min_spawn_dt,
                         "max_spawn_dt": max_spawn_dt
@@ -285,7 +270,7 @@ def check_mvp_kills():
 def run_scraper_loop():
     check_mvp_kills()
     while True:
-        time.sleep(15)  # 15-second fast polling loop
+        time.sleep(15)
         check_mvp_kills()
 
 # ==========================================
@@ -296,11 +281,6 @@ if __name__ == "__main__":
     print("   MuhRO MVP Tracker & Interactive Discord Bot")
     print("==================================================")
 
-    # 1. Keep-Alive Web Server
     threading.Thread(target=run_web_server, daemon=True).start()
-
-    # 2. Scraper Loop
     threading.Thread(target=run_scraper_loop, daemon=True).start()
-
-    # 3. Discord Bot Client
     run_discord_bot()
