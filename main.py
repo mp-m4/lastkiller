@@ -20,12 +20,10 @@ DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 CACHE_FILE = "seen_kills.txt"
 
-# Force specific MVPs to always display as ALIVE / WINDOW OPEN (Keep empty for automated tracking)
 ALWAYS_ALIVE_OVERLOADS = []
 
-# State Tracking
 seen_mvp_kills = set()
-mvp_database = {}  # In-memory database storing MVP status & timestamps
+mvp_database = {}
 warmup_mvp = True
 
 logging.basicConfig(
@@ -60,7 +58,6 @@ def save_cache():
 # HELPER FUNCTIONS
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """Parses scraped HH:MM:SS string and accurately calculates GMT+8 death time."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     now_gmt8 = datetime.utcnow() + timedelta(hours=8)
     
@@ -68,7 +65,6 @@ def get_gmt8_from_scraped_time(time_str):
         h, m, s = map(int, time_match.groups())
         scraped_dt_gmt8 = now_gmt8.replace(hour=h, minute=m, second=s, microsecond=0)
         
-        # If scraped hour is greater than current GMT+8 hour, it belonged to yesterday
         if scraped_dt_gmt8 > now_gmt8:
             scraped_dt_gmt8 -= timedelta(days=1)
             
@@ -136,13 +132,12 @@ async def on_message(message):
         data = mvp_database[matched_mvp]
         now_gmt8 = datetime.utcnow() + timedelta(hours=8)
         
-        # Turn GREEN as soon as current time reaches or passes min_spawn_dt
         if matched_mvp.lower() in ALWAYS_ALIVE_OVERLOADS or now_gmt8 >= data["min_spawn_dt"]:
             status_str = "🟢 **ALIVE / WINDOW OPEN**"
-            color_code = 3066993  # Green
+            color_code = 3066993
         else:
             status_str = "🔴 **DEAD**"
-            color_code = 15158332  # Red
+            color_code = 15158332
 
         embed = discord.Embed(
             title=f"⚔️ MVP Status: {matched_mvp}",
@@ -173,12 +168,8 @@ def run_web_server():
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     httpd.serve_forever()
 
-# ==========================================
-# MULTI-SERVER DISCORD WEBHOOK ALERT HELPER
-# ==========================================
 def send_discord_alert(content, embeds=None):
     webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
-    
     if not webhooks:
         return
 
@@ -194,7 +185,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (ROBUST DYNAMIC PARSER)
+# MVP SCRAPER LOOP (FINAL CORRECTED INDICES)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -212,37 +203,16 @@ def check_mvp_kills():
             for row in rows:
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
-                if len(cols) >= 3:
-                    # Skip table header rows
+                if len(cols) >= 5:
                     text_blob = " ".join(cols).lower()
                     if "monster" in text_blob or "killer" in text_blob or not cols[0]:
                         continue
 
                     mvp_name = cols[0]
-                    map_name = cols[1] if len(cols) > 1 else "unknown_map"
-                    
-                    # Dynamically find which column contains the time (HH:MM:SS) and which is the killer
-                    raw_time = None
-                    killer_name = "Unknown"
-                    respawn_text = "N/A"
-
-                    for col in cols[2:]:
-                        if re.search(r'\d{1,2}:\d{2}:\d{2}', col):
-                            raw_time = col
-                            break
-                    
-                    # If we found a time column, isolate elements around it
-                    if raw_time:
-                        time_index = cols.index(raw_time)
-                        if time_index >= 2:
-                            killer_name = cols[time_index - 1]
-                        if time_index >= 3:
-                            respawn_text = cols[time_index - 2]
-                    else:
-                        # Fallback to standard layout indexing if regex fails
-                        killer_name = cols[2] if len(cols) > 2 else "Unknown"
-                        respawn_text = cols[3] if len(cols) > 3 else "N/A"
-                        raw_time = cols[4] if len(cols) > 4 else cols[-1]
+                    map_name = cols[1]
+                    respawn_text = cols[2]   # Index 2: Respawn delay text
+                    killer_name = cols[4]    # Index 4: Actual player killer name
+                    raw_time = cols[3]       # Index 3: Time of death
 
                     parsed_dt = get_gmt8_from_scraped_time(raw_time)
                     
@@ -309,20 +279,14 @@ def run_scraper_loop():
         time.sleep(15)
         check_mvp_kills()
 
-# ==========================================
-# MAIN EXECUTION ENTRYPOINT
-# ==========================================
 if __name__ == "__main__":
     print("==================================================")
     print("   MuhRO MVP Tracker & Interactive Discord Bot")
     print("==================================================")
 
-    # 1. Start web server FIRST so Render health checks pass immediately
     threading.Thread(target=run_web_server, daemon=True).start()
     time.sleep(1)
 
-    # 2. Start the MVP scraper loop in background
     threading.Thread(target=run_scraper_loop, daemon=True).start()
 
-    # 3. Start Discord Bot (Blocking main thread)
     run_discord_bot()
