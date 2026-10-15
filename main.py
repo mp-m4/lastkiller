@@ -4,19 +4,24 @@ import time
 import re
 import logging
 import threading
+import asyncio
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+import discord
 
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 CACHE_FILE = "seen_kills.txt"
 
+# State Tracking
 seen_mvp_kills = set()
+mvp_database = {}  # In-memory database of latest MVP status entries
 warmup_mvp = True
 
 logging.basicConfig(
@@ -25,23 +30,24 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+# HTTP Session setup with automatic retries for web scraper
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(max_retries=3)
 session.mount('https://', adapter)
 session.mount('http://', adapter)
 
-# Load existing cache from disk if available
+# Load existing kill history from disk to prevent duplicate alerts on reboot
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
             seen_mvp_kills = set(line.strip() for line in f if line.strip())
         logging.info(f"📂 Loaded {len(seen_mvp_kills)} existing kills from disk cache.")
-        warmup_mvp = False  # Skip warmup if cache exists
+        warmup_mvp = False
     except Exception as e:
         logging.error(f"Failed to load cache file: {e}")
 
 def save_cache():
-    """Saves up to 1000 recent kill IDs to local disk."""
+    """Saves up to 1000 recent kill IDs to disk cache."""
     try:
         with open(CACHE_FILE, "w") as f:
             for kill_id in list(seen_mvp_kills)[-1000:]:
@@ -50,54 +56,111 @@ def save_cache():
         logging.error(f"Failed to save cache file: {e}")
 
 # ==========================================
-# HELPER: DIRECT +8 HOURS ADDITION
+# HELPER FUNCTIONS
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """Takes the raw website time string (HH:MM:SS) and adds EXACTLY 8 hours."""
+    """Parses scraped time HH:MM:SS and offsets by +8 hours for Philippines local time (GMT+8)."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     if time_match:
         h, m, s = map(int, time_match.groups())
         now = datetime.utcnow()
         scraped_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
         return scraped_dt + timedelta(hours=8)
-
     return datetime.utcnow() + timedelta(hours=8)
 
 def parse_duration_to_minutes(text):
-    """Extracts total minutes from strings like '1 hour 10 minutes' or '2 hours'."""
+    """Extracts duration in total minutes from strings like '1 hour 10 min'."""
     hours = re.search(r'(\d+)\s*(?:hour|hr)', text, re.IGNORECASE)
     minutes = re.search(r'(\d+)\s*(?:min|minute)', text, re.IGNORECASE)
-    
     h_val = int(hours.group(1)) if hours else 0
     m_val = int(minutes.group(1)) if minutes else 0
-    
     return (h_val * 60) + m_val
 
-def calculate_spawn_range(death_dt_gmt8, respawn_text):
-    """Calculates spawn window by adding respawn minutes to death_dt_gmt8."""
+def calculate_spawn_range_dts(death_dt_gmt8, respawn_text):
+    """Calculates min and max spawn datetime objects."""
     if not respawn_text or "N/A" in respawn_text.upper():
         est_dt = death_dt_gmt8 + timedelta(minutes=60)
-        return f"⏳ **{est_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
+        return est_dt, est_dt
 
     parts = respawn_text.split("-")
-    
     if len(parts) == 2:
-        min_delay = parse_duration_to_minutes(parts[0])
+        min_delay = parse_duration_to_minutes(parts[0]) or parse_duration_to_minutes(parts[1])
         max_delay = parse_duration_to_minutes(parts[1])
-        
-        if min_delay == 0:
-            min_delay = max_delay
-
-        min_spawn = (death_dt_gmt8 + timedelta(minutes=min_delay)).strftime("%Y-%m-%d %H:%M:%S")
-        max_spawn = (death_dt_gmt8 + timedelta(minutes=max_delay)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        return f"⏳ **{min_spawn} ~ {max_spawn}**"
+        return death_dt_gmt8 + timedelta(minutes=min_delay), death_dt_gmt8 + timedelta(minutes=max_delay)
     else:
-        delay = parse_duration_to_minutes(respawn_text)
-        if delay == 0:
-            delay = 60
+        delay = parse_duration_to_minutes(respawn_text) or 60
         spawn_dt = death_dt_gmt8 + timedelta(minutes=delay)
-        return f"⏳ **{spawn_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
+        return spawn_dt, spawn_dt
+
+def format_spawn_range_str(min_dt, max_dt):
+    """Formats spawn window string for Discord embeds."""
+    if min_dt == max_dt:
+        return f"⏳ **{min_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
+    return f"⏳ **{min_dt.strftime('%Y-%m-%d %H:%M:%S')} ~ {max_dt.strftime('%Y-%m-%d %H:%M:%S')}**"
+
+# ==========================================
+# DISCORD BOT CLIENT (INTERACTIVE SEARCH)
+# ==========================================
+intents = discord.Intents.default()
+intents.message_content = True  # Requires Message Content Intent enabled in Discord Dev Portal
+bot_client = discord.Client(intents=intents)
+
+@bot_client.event
+async def on_ready():
+    logging.info(f"🤖 Discord Bot Logged In as {bot_client.user}")
+
+@bot_client.event
+async def on_message(message):
+    if message.author == bot_client.user:
+        return
+
+    # Debug log to watch incoming channel activity on Render
+    logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
+
+    query = message.content.strip().lower()
+    if len(query) < 3:
+        return  # Ignore short queries to prevent accidental triggers
+
+    # Case-insensitive fuzzy search against stored MVP names
+    matched_mvp = None
+    for mvp_key in mvp_database.keys():
+        if query in mvp_key.lower():
+            matched_mvp = mvp_key
+            break
+
+    if matched_mvp:
+        data = mvp_database[matched_mvp]
+        now_gmt8 = datetime.utcnow() + timedelta(hours=8)
+        
+        # Calculate whether window has opened
+        if now_gmt8 >= data["max_spawn_dt"]:
+            status_str = "🟢 **ALIVE / WINDOW OPEN**"
+            color_code = 3066993  # Green
+        else:
+            status_str = "🔴 **DEAD**"
+            color_code = 15158332  # Red
+
+        embed = discord.Embed(
+            title=f"⚔️ MVP Status: {matched_mvp}",
+            color=color_code
+        )
+        embed.add_field(name="Status", value=status_str, inline=False)
+        embed.add_field(name="Last Killed By", value=data["killer_name"], inline=True)
+        embed.add_field(name="Map", value=data["map_name"], inline=True)
+        embed.add_field(name="Time of Death (GMT+8)", value=data["time_of_death_str"], inline=False)
+        embed.add_field(name="Est. Spawn Window (GMT+8)", value=data["est_spawn_str"], inline=False)
+        
+        await message.channel.send(embed=embed)
+        logging.info(f"✅ Replied with status embed for '{matched_mvp}'")
+    else:
+        if len(mvp_database) > 0:
+            logging.info(f"⚠️ Query '{query}' did not match any MVP in database. Sample available keys: {list(mvp_database.keys())[:3]}")
+
+def run_discord_bot():
+    if DISCORD_BOT_TOKEN:
+        bot_client.run(DISCORD_BOT_TOKEN)
+    else:
+        logging.warning("⚠️ DISCORD_BOT_TOKEN missing from environment variables!")
 
 # ==========================================
 # KEEP-ALIVE WEB SERVER FOR RENDER
@@ -107,16 +170,13 @@ def run_web_server():
     server_address = ("0.0.0.0", port)
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
-    
-    send_discord_alert("🧪 **MuhRO Tracker Online**: Strict Collision-Proof Tracker Active!")
     httpd.serve_forever()
 
 # ==========================================
-# DISCORD ALERT HELPER
+# DISCORD WEBHOOK ALERT HELPER
 # ==========================================
 def send_discord_alert(content, embeds=None):
     if not DISCORD_WEBHOOK_URL:
-        logging.warning("⚠️ DISCORD_WEBHOOK_URL environment variable is missing!")
         return
 
     payload = {"content": content}
@@ -126,12 +186,11 @@ def send_discord_alert(content, embeds=None):
     try:
         response = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        logging.info("🚀 Discord alert delivered!")
     except Exception as e:
         logging.error(f"❌ Failed to send Discord alert: {e}")
 
 # ==========================================
-# MVP KILLER MONITORING LOGIC
+# MVP SCRAPER LOOP
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -147,8 +206,7 @@ def check_mvp_kills():
             parsed_count = 0
             new_alerts_sent = 0
             
-            # Process table rows
-            for idx, row in enumerate(rows):
+            for row in rows:
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
                 if len(cols) >= 4:
@@ -166,11 +224,20 @@ def check_mvp_kills():
 
                     death_dt_gmt8 = get_gmt8_from_scraped_time(raw_time)
                     time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
-                    est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
+                    min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
+                    est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
+
+                    # Save / update in-memory state for interactive searches
+                    mvp_database[mvp_name] = {
+                        "killer_name": killer_name,
+                        "map_name": map_name,
+                        "time_of_death_str": time_of_death_str,
+                        "est_spawn_str": est_spawn_str,
+                        "min_spawn_dt": min_spawn_dt,
+                        "max_spawn_dt": max_spawn_dt
+                    }
 
                     parsed_count += 1
-                    
-                    # Create strict unique identifier combining content + timestamp
                     kill_id = f"{mvp_name}_{map_name}_{killer_name}_{raw_time}"
 
                     if kill_id not in seen_mvp_kills:
@@ -196,26 +263,32 @@ def check_mvp_kills():
 
             if warmup_mvp:
                 warmup_mvp = False
-                logging.info("✅ Initial warm-up complete. Cache file saved to disk.")
+                logging.info(f"✅ Initial warm-up complete. Scraped {len(mvp_database)} active MVPs into database.")
 
             logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
 
     except Exception as e:
         logging.error(f"Error checking MVP kills: {e}")
 
+def run_scraper_loop():
+    check_mvp_kills()
+    while True:
+        time.sleep(15)  # 15-second fast polling loop
+        check_mvp_kills()
+
 # ==========================================
 # MAIN EXECUTION ENTRYPOINT
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("   MuhRO MVP Tracker (Disk Cache + Fast 15s Loop)")
+    print("   MuhRO MVP Tracker & Interactive Discord Bot")
     print("==================================================")
 
-    server_thread = threading.Thread(target=run_web_server, daemon=True)
-    server_thread.start()
+    # 1. Start Keep-Alive Web Server
+    threading.Thread(target=run_web_server, daemon=True).start()
 
-    check_mvp_kills()
+    # 2. Start Scraper Loop
+    threading.Thread(target=run_scraper_loop, daemon=True).start()
 
-    while True:
-        time.sleep(15)  # Fast 15-second loop to prevent missing fast successive kills
-        check_mvp_kills()
+    # 3. Start Discord Bot Client
+    run_discord_bot()
