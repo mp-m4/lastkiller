@@ -140,7 +140,7 @@ async def on_message(message):
         embed.add_field(name="Status", value=status_str, inline=False)
         embed.add_field(name="Last Killed By", value=data["killer_name"], inline=True)
         embed.add_field(name="Map", value=data["map_name"], inline=True)
-        embed.add_field(name="Time Logged (GMT+8)", value=data["time_of_death_str"], inline=False)
+        embed.add_field(name="Time of Death (GMT+8)", value=data["time_of_death_str"], inline=False)
         embed.add_field(name="Est. Spawn Window (GMT+8)", value=data["est_spawn_str"], inline=False)
         
         await message.channel.send(embed=embed)
@@ -246,6 +246,7 @@ def check_mvp_kills():
                                     {"name": "MVP", "value": mvp_name, "inline": True},
                                     {"name": "Killed By", "value": killer_name, "inline": True},
                                     {"name": "Map", "value": map_name, "inline": True},
+                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
                                     {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
                                 ]
                             }]
