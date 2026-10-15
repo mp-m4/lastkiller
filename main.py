@@ -315,8 +315,7 @@ def build_kill_fields(record):
         ("Map", record["map_name"], True),
         ("First Detected (GMT+8)", record["first_seen_display"], False),
         ("Estimated Spawn Window (GMT+8)", record["spawn_display"], False),
-        ("Timing Note", "MuhRO's ranking page does not expose an exact kill timestamp. The estimate starts when this tracker first detects a changed last-killer entry.", False),
-    ]
+       ]
 
 
 def check_mvp_kills():
@@ -515,11 +514,6 @@ async def on_message(message):
             ("Respawn Interval (website)", record.get("respawn_text", "Unknown"), True),
             ("First Detected (GMT+8)", record.get("first_seen_display", "Unknown"), False),
             ("Estimated Spawn Window (GMT+8)", record.get("spawn_display", "Unknown"), False),
-            (
-                "Accuracy Warning",
-                "MuhRO's ranking page does not provide the exact kill time. This estimate is based on when the tracker detected the current last-killer entry, not a confirmed death timestamp.",
-                False,
-            ),
         ],
     )
     await message.channel.send(embed=embed)
