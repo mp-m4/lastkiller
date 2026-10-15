@@ -214,27 +214,24 @@ def check_mvp_kills():
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
                 if len(cols) >= 4:
-                    # Temporary debug: Print row contents to inspect how FluxCP structures columns
-                    logging.info(f"DEBUG ROW: {cols}")
-
-                    if "MVP" in cols[0] or "Monster" in cols[0] or not cols[0]:
+                    if "Monster" in cols[0] or "MVP" in cols[0] or not cols[0]:
                         continue
 
                     mvp_name = cols[0]
                     map_name = cols[1]
                     respawn_text = cols[2]
-                    killer_name = cols[-2]
-                    raw_time = cols[-1]
-
-                    if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
-                        killer_name, raw_time = raw_time, killer_name
+                    killer_name = cols[3]
+                    
+                    raw_time = cols[4] if len(cols) > 4 else cols[3]
+                    if len(cols) == 4:
+                        raw_time = cols[-1]
+                        killer_name = cols[-2]
 
                     parsed_dt = get_gmt8_from_scraped_time(raw_time)
                     
-                    # Prevent overwriting a valid historical kill with a failed parse timestamp
                     if parsed_dt is None:
                         if mvp_name in mvp_database:
-                            continue  # Keep existing known state
+                            continue
                         else:
                             death_dt_gmt8 = datetime.utcnow() + timedelta(hours=8)
                     else:
@@ -244,7 +241,6 @@ def check_mvp_kills():
                     min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
                     est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
 
-                    # If this MVP already exists in the database with the exact same death time, do not overwrite it unnecessarily
                     if mvp_name in mvp_database and mvp_database[mvp_name]["time_of_death_str"] == time_of_death_str:
                         parsed_count += 1
                         continue
