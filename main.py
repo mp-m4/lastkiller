@@ -14,6 +14,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 # ==========================================
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
+CACHE_FILE = "seen_kills.txt"
 
 seen_mvp_kills = set()
 warmup_mvp = True
@@ -24,29 +25,41 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# Set up HTTP session with automatic retries for stability
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(max_retries=3)
 session.mount('https://', adapter)
 session.mount('http://', adapter)
 
+# Load existing cache from disk if available
+if os.path.exists(CACHE_FILE):
+    try:
+        with open(CACHE_FILE, "r") as f:
+            seen_mvp_kills = set(line.strip() for line in f if line.strip())
+        logging.info(f"📂 Loaded {len(seen_mvp_kills)} existing kills from disk cache.")
+        warmup_mvp = False  # Skip warmup if cache exists
+    except Exception as e:
+        logging.error(f"Failed to load cache file: {e}")
+
+def save_cache():
+    """Saves up to 1000 recent kill IDs to local disk."""
+    try:
+        with open(CACHE_FILE, "w") as f:
+            for kill_id in list(seen_mvp_kills)[-1000:]:
+                f.write(f"{kill_id}\n")
+    except Exception as e:
+        logging.error(f"Failed to save cache file: {e}")
+
 # ==========================================
 # HELPER: DIRECT +8 HOURS ADDITION
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """
-    Takes the raw website time string (HH:MM:SS), parses it,
-    and adds EXACTLY 8 hours to make it GMT+8.
-    """
+    """Takes the raw website time string (HH:MM:SS) and adds EXACTLY 8 hours."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     if time_match:
         h, m, s = map(int, time_match.groups())
-        
         now = datetime.utcnow()
         scraped_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
-        
-        gmt8_dt = scraped_dt + timedelta(hours=8)
-        return gmt8_dt
+        return scraped_dt + timedelta(hours=8)
 
     return datetime.utcnow() + timedelta(hours=8)
 
@@ -95,7 +108,7 @@ def run_web_server():
     httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     
-    send_discord_alert("🧪 **MuhRO Tracker Online**: 30s Fast Loop Active!")
+    send_discord_alert("🧪 **MuhRO Tracker Online**: Strict Collision-Proof Tracker Active!")
     httpd.serve_forever()
 
 # ==========================================
@@ -134,7 +147,8 @@ def check_mvp_kills():
             parsed_count = 0
             new_alerts_sent = 0
             
-            for row in rows:
+            # Process table rows
+            for idx, row in enumerate(rows):
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
                 if len(cols) >= 4:
@@ -155,7 +169,8 @@ def check_mvp_kills():
                     est_spawn_str = calculate_spawn_range(death_dt_gmt8, respawn_text)
 
                     parsed_count += 1
-                    # Unique identifier key per kill record
+                    
+                    # Create strict unique identifier combining content + timestamp
                     kill_id = f"{mvp_name}_{map_name}_{killer_name}_{raw_time}"
 
                     if kill_id not in seen_mvp_kills:
@@ -177,15 +192,13 @@ def check_mvp_kills():
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
 
-            # Prevent unneeded memory accumulation while preserving history
-            if len(seen_mvp_kills) > 500:
-                seen_mvp_kills.clear()
-
-            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
+            save_cache()
 
             if warmup_mvp:
                 warmup_mvp = False
-                logging.info("✅ Warm-up complete. Initial logs cached silently.")
+                logging.info("✅ Initial warm-up complete. Cache file saved to disk.")
+
+            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
 
     except Exception as e:
         logging.error(f"Error checking MVP kills: {e}")
@@ -195,7 +208,7 @@ def check_mvp_kills():
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
-    print("   MuhRO MVP Tracker (30s Fast Loop | Auto-Retry)")
+    print("   MuhRO MVP Tracker (Disk Cache + Fast 15s Loop)")
     print("==================================================")
 
     server_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -204,5 +217,5 @@ if __name__ == "__main__":
     check_mvp_kills()
 
     while True:
-        time.sleep(30)  # Polling every 30 seconds
+        time.sleep(15)  # Fast 15-second loop to prevent missing fast successive kills
         check_mvp_kills()
