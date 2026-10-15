@@ -219,13 +219,9 @@ def check_mvp_kills():
 
                     mvp_name = cols[0]
                     map_name = cols[1]
-                    respawn_text = cols[2]
-                    killer_name = cols[3]
-                    
-                    raw_time = cols[4] if len(cols) > 4 else cols[3]
-                    if len(cols) == 4:
-                        raw_time = cols[-1]
-                        killer_name = cols[-2]
+                    killer_name = cols[2]
+                    respawn_text = cols[3]
+                    raw_time = cols[4] if len(cols) > 4 else cols[-1]
 
                     parsed_dt = get_gmt8_from_scraped_time(raw_time)
                     
@@ -256,7 +252,6 @@ def check_mvp_kills():
                     }
 
                     parsed_count += 1
-                    # Track unique kill using MVP name and exact timestamp
                     kill_id = f"{mvp_name}_{time_of_death_str}"
 
                     if kill_id not in seen_mvp_kills:
