@@ -59,7 +59,7 @@ def save_cache():
 # HELPER FUNCTIONS
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """Parses scraped HH:MM:SS string and assigns it to current GMT+8 date."""
+    """Parses scraped HH:MM:SS string and accurately calculates GMT+8 death time."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     now_gmt8 = datetime.utcnow() + timedelta(hours=8)
     
