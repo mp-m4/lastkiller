@@ -4,7 +4,6 @@ import time
 import re
 import logging
 import threading
-import asyncio
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
@@ -117,7 +116,11 @@ async def on_message(message):
     # Debug log to watch incoming channel activity on Render
     logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
 
-    query = message.content.strip().lower()
+    raw_content = message.content.strip().lower()
+
+    # Strip leading command prefixes like ! or ?
+    query = raw_content.lstrip("!?").strip()
+
     if len(query) < 3:
         return  # Ignore short queries to prevent accidental triggers
 
