@@ -107,13 +107,11 @@ async def on_message(message):
 
     matched_mvp = None
     
-    # 1. Exact or substring match
     for mvp_key in mvp_database.keys():
         if query in mvp_key.lower() or mvp_key.lower() in query:
             matched_mvp = mvp_key
             break
 
-    # 2. Multi-word fallback match
     if not matched_mvp:
         query_words = query.split()
         for mvp_key in mvp_database.keys():
@@ -181,7 +179,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (LOCKED IMMUTABLE RECORD)
+# MVP SCRAPER LOOP (UNIQUE PER-ROW TIMESTAMPS)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -196,14 +194,11 @@ def check_mvp_kills():
             rows = table.find_all("tr") if table else soup.find_all("tr")
             parsed_count = 0
             new_alerts_sent = 0
-            
-            now_gmt8 = datetime.utcnow() + timedelta(hours=8)
 
             for row in rows:
                 cols = [td.text.strip() for td in row.find_all("td") if td.text.strip()]
                 text_blob = " ".join(cols).lower()
                 
-                # Skip header/non-data rows
                 if not cols or "monster" in text_blob or "killer" in text_blob or "ranking" in text_blob:
                     continue
 
@@ -213,11 +208,18 @@ def check_mvp_kills():
                     respawn_text = cols[2]
                     killer_name = cols[3]
 
-                    kill_id = f"{mvp_name}_{killer_name}_{map_name}"
+                    parsed_count += 1
 
-                    # Lock the record permanently once initialized; never overwrite time of death for an active entry
+                    is_new_kill = False
                     if mvp_name not in mvp_database:
-                        death_dt_gmt8 = now_gmt8
+                        is_new_kill = True
+                    elif mvp_database[mvp_name]["killer_name"] != killer_name or mvp_database[mvp_name]["map_name"] != map_name:
+                        is_new_kill = True
+                        logging.info(f"🔄 Killer/Map update detected for {mvp_name}: now {killer_name} on {map_name}")
+
+                    if is_new_kill:
+                        # Generate independent timestamp per row evaluation
+                        death_dt_gmt8 = datetime.utcnow() + timedelta(hours=8)
                         time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                         
                         min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
@@ -233,14 +235,12 @@ def check_mvp_kills():
                             "max_spawn_dt": max_spawn_dt
                         }
 
-                    parsed_count += 1
-
-                    if kill_id not in seen_mvp_kills:
+                        kill_id = f"{mvp_name}_{killer_name}_{map_name}"
                         seen_mvp_kills.add(kill_id)
-                        
+
                         if not warmup_mvp:
                             new_alerts_sent += 1
-                            logging.info(f"🎯 NEW MVP ENTRY: {mvp_name} on {map_name} by {killer_name}")
+                            logging.info(f"🎯 NEW MVP ALERT: {mvp_name} on {map_name} by {killer_name}")
                             data = mvp_database[mvp_name]
                             embed = [{
                                 "title": "⚔️ MVP Ranking Update!",
@@ -254,6 +254,8 @@ def check_mvp_kills():
                                 ]
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Tracker**", embed)
+                            # Tiny micro-sleep to ensure distinct second increments if processing back-to-back new kills
+                            time.sleep(0.1)
 
             save_cache()
 
