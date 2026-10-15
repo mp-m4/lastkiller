@@ -151,12 +151,16 @@ def run_discord_bot():
         logging.warning("⚠️ DISCORD_BOT_TOKEN missing from environment variables!")
 
 # ==========================================
-# KEEP-ALIVE WEB SERVER
+# KEEP-ALIVE WEB SERVER (SILENT HANDLER)
 # ==========================================
+class QuietHandler(SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     server_address = ("0.0.0.0", port)
-    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    httpd = HTTPServer(server_address, QuietHandler)
     logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
     httpd.serve_forever()
 
@@ -179,7 +183,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (UNIQUE PER-ROW TIMESTAMPS)
+# MVP SCRAPER LOOP (VERIFIED ENTRY & UPDATE)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -210,21 +214,28 @@ def check_mvp_kills():
 
                     parsed_count += 1
 
-                    is_new_kill = False
-                    if mvp_name not in mvp_database:
-                        is_new_kill = True
-                    elif mvp_database[mvp_name]["killer_name"] != killer_name or mvp_database[mvp_name]["map_name"] != map_name:
-                        is_new_kill = True
-                        logging.info(f"🔄 Killer/Map update detected for {mvp_name}: now {killer_name} on {map_name}")
+                    # Construct unique identifier for this specific kill instance
+                    kill_id = f"{mvp_name}_{killer_name}_{map_name}"
 
-                    if is_new_kill:
-                        # Generate independent timestamp per row evaluation
+                    # Verify if this is truly a new entry by comparing killer and map against stored state
+                    is_new_entry = False
+                    if mvp_name not in mvp_database:
+                        is_new_entry = True
+                    else:
+                        current_record = mvp_database[mvp_name]
+                        if current_record["killer_name"] != killer_name or current_record["map_name"] != map_name:
+                            is_new_entry = True
+                            logging.info(f"🔄 New kill detected for {mvp_name}: now killed by {killer_name} on {map_name} (previously {current_record['killer_name']})")
+
+                    if is_new_entry:
+                        # Capture ingestion time as actual time of death for live tracking
                         death_dt_gmt8 = datetime.utcnow() + timedelta(hours=8)
                         time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                         
                         min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
                         est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
 
+                        # Save structured record
                         mvp_database[mvp_name] = {
                             "killer_name": killer_name,
                             "map_name": map_name,
@@ -235,12 +246,11 @@ def check_mvp_kills():
                             "max_spawn_dt": max_spawn_dt
                         }
 
-                        kill_id = f"{mvp_name}_{killer_name}_{map_name}"
                         seen_mvp_kills.add(kill_id)
 
                         if not warmup_mvp:
                             new_alerts_sent += 1
-                            logging.info(f"🎯 NEW MVP ALERT: {mvp_name} on {map_name} by {killer_name}")
+                            logging.info(f"🎯 NEW MVP ALERT SENT: {mvp_name} on {map_name} by {killer_name}")
                             data = mvp_database[mvp_name]
                             embed = [{
                                 "title": "⚔️ MVP Ranking Update!",
@@ -251,10 +261,9 @@ def check_mvp_kills():
                                     {"name": "Map", "value": map_name, "inline": True},
                                     {"name": "Time of Death (GMT+8)", "value": data["time_of_death_str"], "inline": False},
                                     {"name": "Est. Spawn Window (GMT+8)", "value": data["est_spawn_str"], "inline": False}
-                                ]
+                                }]
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Tracker**", embed)
-                            # Tiny micro-sleep to ensure distinct second increments if processing back-to-back new kills
                             time.sleep(0.1)
 
             save_cache()
@@ -266,13 +275,15 @@ def check_mvp_kills():
             logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
 
     except Exception as e:
-        logging.error(f"Error checking MVP kills: {e}")
+        logging.error(f"❌ Error in check_mvp_kills loop: {e}")
 
 def run_scraper_loop():
-    check_mvp_kills()
     while True:
+        try:
+            check_mvp_kills()
+        except Exception as e:
+            logging.error(f"❌ Unhandled scraper loop exception: {e}")
         time.sleep(15)
-        check_mvp_kills()
 
 if __name__ == "__main__":
     print("==================================================")
