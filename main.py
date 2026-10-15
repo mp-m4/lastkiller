@@ -256,7 +256,8 @@ def check_mvp_kills():
                     }
 
                     parsed_count += 1
-                    kill_id = f"{mvp_name}_{map_name}_{killer_name}_{raw_time}"
+                    # Track unique kill using MVP name and exact timestamp
+                    kill_id = f"{mvp_name}_{time_of_death_str}"
 
                     if kill_id not in seen_mvp_kills:
                         seen_mvp_kills.add(kill_id)
