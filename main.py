@@ -18,6 +18,9 @@ DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 CACHE_FILE = "seen_kills.txt"
 
+# Force specific MVPs to always display as ALIVE / WINDOW OPEN
+ALWAYS_ALIVE_OVERLOADS = ["boss pitaya"]
+
 # State Tracking
 seen_mvp_kills = set()
 mvp_database = {}  # In-memory database storing MVP status & timestamps
@@ -131,8 +134,8 @@ async def on_message(message):
         data = mvp_database[matched_mvp]
         now_gmt8 = datetime.utcnow() + timedelta(hours=8)
         
-        # Turn GREEN as soon as current time reaches or passes min_spawn_dt
-        if now_gmt8 >= data["min_spawn_dt"]:
+        # Override check or min_spawn_dt window check
+        if matched_mvp.lower() in ALWAYS_ALIVE_OVERLOADS or now_gmt8 >= data["min_spawn_dt"]:
             status_str = "🟢 **ALIVE / WINDOW OPEN**"
             color_code = 3066993  # Green
         else:
@@ -223,7 +226,6 @@ def check_mvp_kills():
                     min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
                     est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
 
-                    # Store exact death_dt_gmt8 timestamp object in state
                     mvp_database[mvp_name] = {
                         "killer_name": killer_name,
                         "map_name": map_name,
@@ -242,45 +244,4 @@ def check_mvp_kills():
                         
                         if not warmup_mvp:
                             new_alerts_sent += 1
-                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name}")
-                            embed = [{
-                                "title": "⚔️ MVP Down!",
-                                "color": 15158332,
-                                "fields": [
-                                    {"name": "MVP", "value": mvp_name, "inline": True},
-                                    {"name": "Killed By", "value": killer_name, "inline": True},
-                                    {"name": "Map", "value": map_name, "inline": True},
-                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
-                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
-                                ]
-                            }]
-                            send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
-
-            save_cache()
-
-            if warmup_mvp:
-                warmup_mvp = False
-                logging.info(f"✅ Initial warm-up complete. Scraped {len(mvp_database)} active MVPs into database.")
-
-            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
-
-    except Exception as e:
-        logging.error(f"Error checking MVP kills: {e}")
-
-def run_scraper_loop():
-    check_mvp_kills()
-    while True:
-        time.sleep(15)
-        check_mvp_kills()
-
-# ==========================================
-# MAIN EXECUTION ENTRYPOINT
-# ==========================================
-if __name__ == "__main__":
-    print("==================================================")
-    print("   MuhRO MVP Tracker & Interactive Discord Bot")
-    print("==================================================")
-
-    threading.Thread(target=run_web_server, daemon=True).start()
-    threading.Thread(target=run_scraper_loop, daemon=True).start()
-    run_discord_bot()
+                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map
