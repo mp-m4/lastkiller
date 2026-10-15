@@ -185,7 +185,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (FINAL CORRECTED INDICES)
+# MVP SCRAPER LOOP (LOCKED INDEX PARSER)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -201,18 +201,18 @@ def check_mvp_kills():
             new_alerts_sent = 0
             
             for row in rows:
-                cols = [" ".join(td.text.split()) for td in row.find_all("td")]
+                cols = [td.text.strip() for td in row.find_all("td") if td.text.strip()]
                 
-                if len(cols) >= 5:
+                if len(cols) >= 4:
                     text_blob = " ".join(cols).lower()
-                    if "monster" in text_blob or "killer" in text_blob or not cols[0]:
+                    if "monster" in text_blob or "killer" in text_blob:
                         continue
 
                     mvp_name = cols[0]
                     map_name = cols[1]
-                    respawn_text = cols[2]   # Index 2: Respawn delay text
-                    killer_name = cols[4]    # Index 4: Actual player killer name
-                    raw_time = cols[3]       # Index 3: Time of death
+                    respawn_text = cols[2]
+                    killer_name = cols[3]
+                    raw_time = cols[4] if len(cols) > 4 else cols[3]
 
                     parsed_dt = get_gmt8_from_scraped_time(raw_time)
                     
