@@ -111,7 +111,7 @@ async def on_ready():
 
 @bot_client.event
 async def on_message(message):
-    if message.author == bot_client.user:
+    if message.author == bot_client.user or message.author.bot:
         return
 
     logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
@@ -119,14 +119,25 @@ async def on_message(message):
     raw_content = message.content.strip().lower()
     query = raw_content.lstrip("!?").strip()
 
-    if len(query) < 3:
+    if len(query) < 2:
         return
 
     matched_mvp = None
+    
+    # 1. Try exact or substring match first
     for mvp_key in mvp_database.keys():
-        if query in mvp_key.lower():
+        if query in mvp_key.lower() or mvp_key.lower() in query:
             matched_mvp = mvp_key
             break
+
+    # 2. Fallback to multi-word matching
+    if not matched_mvp:
+        query_words = query.split()
+        for mvp_key in mvp_database.keys():
+            key_lower = mvp_key.lower()
+            if all(word in key_lower for word in query_words):
+                matched_mvp = mvp_key
+                break
 
     if matched_mvp:
         data = mvp_database[matched_mvp]
@@ -150,7 +161,9 @@ async def on_message(message):
         embed.add_field(name="Est. Spawn Window (GMT+8)", value=data["est_spawn_str"], inline=False)
         
         await message.channel.send(embed=embed)
-        logging.info(f"✅ Replied with status embed for '{matched_mvp}'")
+        logging.info(f"✅ Replied with status embed for matched MVP: '{matched_mvp}'")
+    else:
+        logging.warning(f"⚠️ No MVP found matching query: '{query}'.")
 
 def run_discord_bot():
     if DISCORD_BOT_TOKEN:
@@ -170,7 +183,6 @@ def run_web_server():
 
 def send_discord_alert(content, embeds=None):
     webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
-    
     if not webhooks:
         logging.error("❌ ERROR: No webhook URLs found in environment variables!")
         return
@@ -181,14 +193,10 @@ def send_discord_alert(content, embeds=None):
 
     for url in webhooks:
         try:
-            logging.info(f"📤 Attempting to send webhook to: {url[:35]}...")
             response = session.post(url, json=payload, timeout=10)
-            logging.info(f"📡 Webhook response status code: {response.status_code}")
-            if response.status_code != 204 and response.status_code != 200:
-                logging.error(f"❌ Webhook rejected! Response text: {response.text}")
             response.raise_for_status()
         except Exception as e:
-            logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
+            logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
 # MVP SCRAPER LOOP
@@ -202,18 +210,19 @@ def check_mvp_kills():
         
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            rows = soup.find_all("tr")
+            table = soup.find("table")
+            rows = table.find_all("tr") if table else soup.find_all("tr")
             parsed_count = 0
             new_alerts_sent = 0
             
             for row in rows:
                 cols = [td.text.strip() for td in row.find_all("td") if td.text.strip()]
                 
-                if len(cols) >= 4:
-                    text_blob = " ".join(cols).lower()
-                    if "monster" in text_blob or "killer" in text_blob:
-                        continue
+                text_blob = " ".join(cols).lower()
+                if not cols or "monster" in text_blob or "killer" in text_blob or "ranking" in text_blob:
+                    continue
 
+                if len(cols) >= 4:
                     mvp_name = cols[0]
                     map_name = cols[1]
                     respawn_text = cols[2]
@@ -295,7 +304,6 @@ if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     time.sleep(1)
 
-    # Send a startup test ping to verify webhook connectivity immediately
     send_discord_alert("🔌 **MVP Tracker Started & Webhook Connected!**")
 
     threading.Thread(target=run_scraper_loop, daemon=True).start()
