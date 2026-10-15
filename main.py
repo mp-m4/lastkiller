@@ -149,4 +149,166 @@ async def on_message(message):
             color=color_code
         )
         embed.add_field(name="Status", value=status_str, inline=False)
-        embed.add
+        embed.add_field(name="Last Killed By", value=data["killer_name"], inline=True)
+        embed.add_field(name="Map", value=data["map_name"], inline=True)
+        embed.add_field(name="Time of Death (GMT+8)", value=data["time_of_death_str"], inline=False)
+        embed.add_field(name="Est. Spawn Window (GMT+8)", value=data["est_spawn_str"], inline=False)
+        
+        await message.channel.send(embed=embed)
+        logging.info(f"✅ Replied with status embed for '{matched_mvp}'")
+
+def run_discord_bot():
+    if DISCORD_BOT_TOKEN:
+        bot_client.run(DISCORD_BOT_TOKEN)
+    else:
+        logging.warning("⚠️ DISCORD_BOT_TOKEN missing from environment variables!")
+
+# ==========================================
+# KEEP-ALIVE WEB SERVER
+# ==========================================
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server_address = ("0.0.0.0", port)
+    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    logging.info(f"🌐 Keep-Alive HTTP Server bound to 0.0.0.0:{port}")
+    httpd.serve_forever()
+
+# ==========================================
+# MULTI-SERVER DISCORD WEBHOOK ALERT HELPER
+# ==========================================
+def send_discord_alert(content, embeds=None):
+    webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
+    
+    if not webhooks:
+        return
+
+    payload = {"content": content}
+    if embeds:
+        payload["embeds"] = embeds
+
+    for url in webhooks:
+        try:
+            response = session.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
+
+# ==========================================
+# MVP SCRAPER LOOP
+# ==========================================
+def check_mvp_kills():
+    global warmup_mvp
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    try:
+        logging.info("🔍 Scraping FluxCP MVP rankings...")
+        res = session.get(MVP_LOG_URL, headers=headers, timeout=10)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            rows = soup.find_all("tr")
+            parsed_count = 0
+            new_alerts_sent = 0
+            
+            for row in rows:
+                cols = [" ".join(td.text.split()) for td in row.find_all("td")]
+                
+                if len(cols) >= 4:
+                    if "MVP" in cols[0] or "Monster" in cols[0] or not cols[0]:
+                        continue
+
+                    mvp_name = cols[0]
+                    map_name = cols[1]
+                    respawn_text = cols[2]
+                    killer_name = cols[-2]
+                    raw_time = cols[-1]
+
+                    if any(t in killer_name.lower() for t in ["min", "hour", "sec", "ago", ":"]):
+                        killer_name, raw_time = raw_time, killer_name
+
+                    parsed_dt = get_gmt8_from_scraped_time(raw_time)
+                    
+                    # Prevent overwriting a valid historical kill with a failed parse timestamp
+                    if parsed_dt is None:
+                        if mvp_name in mvp_database:
+                            continue  # Keep existing known state
+                        else:
+                            death_dt_gmt8 = datetime.utcnow() + timedelta(hours=8)
+                    else:
+                        death_dt_gmt8 = parsed_dt
+
+                    time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
+                    min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
+                    est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
+
+                    # If this MVP already exists in the database with the exact same death time, do not overwrite it unnecessarily
+                    if mvp_name in mvp_database and mvp_database[mvp_name]["time_of_death_str"] == time_of_death_str:
+                        parsed_count += 1
+                        continue
+
+                    mvp_database[mvp_name] = {
+                        "killer_name": killer_name,
+                        "map_name": map_name,
+                        "time_of_death_str": time_of_death_str,
+                        "death_dt_gmt8": death_dt_gmt8,
+                        "est_spawn_str": est_spawn_str,
+                        "min_spawn_dt": min_spawn_dt,
+                        "max_spawn_dt": max_spawn_dt
+                    }
+
+                    parsed_count += 1
+                    kill_id = f"{mvp_name}_{map_name}_{killer_name}_{raw_time}"
+
+                    if kill_id not in seen_mvp_kills:
+                        seen_mvp_kills.add(kill_id)
+                        
+                        if not warmup_mvp:
+                            new_alerts_sent += 1
+                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name}")
+                            embed = [{
+                                "title": "⚔️ MVP Down!",
+                                "color": 15158332,
+                                "fields": [
+                                    {"name": "MVP", "value": mvp_name, "inline": True},
+                                    {"name": "Killed By", "value": killer_name, "inline": True},
+                                    {"name": "Map", "value": map_name, "inline": True},
+                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
+                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
+                                ]
+                            }]
+                            send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
+
+            save_cache()
+
+            if warmup_mvp:
+                warmup_mvp = False
+                logging.info(f"✅ Initial warm-up complete. Scraped {len(mvp_database)} active MVPs into database.")
+
+            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
+
+    except Exception as e:
+        logging.error(f"Error checking MVP kills: {e}")
+
+def run_scraper_loop():
+    check_mvp_kills()
+    while True:
+        time.sleep(15)
+        check_mvp_kills()
+
+# ==========================================
+# MAIN EXECUTION ENTRYPOINT
+# ==========================================
+if __name__ == "__main__":
+    print("==================================================")
+    print("   MuhRO MVP Tracker & Interactive Discord Bot")
+    print("==================================================")
+
+    # 1. Start web server FIRST so Render health checks pass immediately
+    threading.Thread(target=run_web_server, daemon=True).start()
+    time.sleep(1)
+
+    # 2. Start the MVP scraper loop in background
+    threading.Thread(target=run_scraper_loop, daemon=True).start()
+
+    # 3. Start Discord Bot (Blocking main thread)
+    run_discord_bot()
