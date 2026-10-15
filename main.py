@@ -181,7 +181,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (DIRECT ROW PARSER)
+# MVP SCRAPER LOOP (IMMUTABLE RECORD PARSER)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -213,23 +213,25 @@ def check_mvp_kills():
                     respawn_text = cols[2]
                     killer_name = cols[3]
 
-                    death_dt_gmt8 = now_gmt8
-                    time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
-                    est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
-
                     kill_id = f"{mvp_name}_{killer_name}_{map_name}"
 
-                    mvp_database[mvp_name] = {
-                        "killer_name": killer_name,
-                        "map_name": map_name,
-                        "time_of_death_str": time_of_death_str,
-                        "death_dt_gmt8": death_dt_gmt8,
-                        "est_spawn_str": est_spawn_str,
-                        "min_spawn_dt": min_spawn_dt,
-                        "max_spawn_dt": max_spawn_dt
-                    }
+                    # Only register/initialize if this specific MVP & killer combination isn't already logged
+                    if mvp_name not in mvp_database or mvp_database[mvp_name]["killer_name"] != killer_name:
+                        death_dt_gmt8 = now_gmt8
+                        time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
+                        est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
+
+                        mvp_database[mvp_name] = {
+                            "killer_name": killer_name,
+                            "map_name": map_name,
+                            "time_of_death_str": time_of_death_str,
+                            "death_dt_gmt8": death_dt_gmt8,
+                            "est_spawn_str": est_spawn_str,
+                            "min_spawn_dt": min_spawn_dt,
+                            "max_spawn_dt": max_spawn_dt
+                        }
 
                     parsed_count += 1
 
@@ -239,6 +241,7 @@ def check_mvp_kills():
                         if not warmup_mvp:
                             new_alerts_sent += 1
                             logging.info(f"🎯 NEW MVP ENTRY: {mvp_name} on {map_name} by {killer_name}")
+                            data = mvp_database[mvp_name]
                             embed = [{
                                 "title": "⚔️ MVP Ranking Update!",
                                 "color": 15158332,
@@ -246,8 +249,8 @@ def check_mvp_kills():
                                     {"name": "MVP", "value": mvp_name, "inline": True},
                                     {"name": "Killed By", "value": killer_name, "inline": True},
                                     {"name": "Map", "value": map_name, "inline": True},
-                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
-                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
+                                    {"name": "Time of Death (GMT+8)", "value": data["time_of_death_str"], "inline": False},
+                                    {"name": "Est. Spawn Window (GMT+8)", "value": data["est_spawn_str"], "inline": False}
                                 ]
                             }]
                             send_discord_alert("🏆 **MuhRO MVP Tracker**", embed)
