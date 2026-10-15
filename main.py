@@ -214,6 +214,9 @@ def check_mvp_kills():
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
                 if len(cols) >= 4:
+                    # Temporary debug: Print row contents to inspect how FluxCP structures columns
+                    logging.info(f"DEBUG ROW: {cols}")
+
                     if "MVP" in cols[0] or "Monster" in cols[0] or not cols[0]:
                         continue
 
