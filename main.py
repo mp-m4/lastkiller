@@ -170,7 +170,9 @@ def run_web_server():
 
 def send_discord_alert(content, embeds=None):
     webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
+    
     if not webhooks:
+        logging.error("❌ ERROR: No webhook URLs found in environment variables!")
         return
 
     payload = {"content": content}
@@ -179,13 +181,17 @@ def send_discord_alert(content, embeds=None):
 
     for url in webhooks:
         try:
+            logging.info(f"📤 Attempting to send webhook to: {url[:35]}...")
             response = session.post(url, json=payload, timeout=10)
+            logging.info(f"📡 Webhook response status code: {response.status_code}")
+            if response.status_code != 204 and response.status_code != 200:
+                logging.error(f"❌ Webhook rejected! Response text: {response.text}")
             response.raise_for_status()
         except Exception as e:
             logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (LOCKED INDEX PARSER)
+# MVP SCRAPER LOOP
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -270,6 +276,8 @@ def check_mvp_kills():
                 warmup_mvp = False
                 logging.info(f"✅ Initial warm-up complete. Scraped {len(mvp_database)} active MVPs into database.")
 
+            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
+
     except Exception as e:
         logging.error(f"Error checking MVP kills: {e}")
 
@@ -286,6 +294,9 @@ if __name__ == "__main__":
 
     threading.Thread(target=run_web_server, daemon=True).start()
     time.sleep(1)
+
+    # Send a startup test ping to verify webhook connectivity immediately
+    send_discord_alert("🔌 **MVP Tracker Started & Webhook Connected!**")
 
     threading.Thread(target=run_scraper_loop, daemon=True).start()
 
