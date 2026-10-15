@@ -194,14 +194,13 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP
+# MVP SCRAPER LOOP (ROBUST DYNAMIC PARSER)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     try:
-        logging.info("🔍 Scraping FluxCP MVP rankings...")
         res = session.get(MVP_LOG_URL, headers=headers, timeout=10)
         
         if res.status_code == 200:
@@ -213,15 +212,37 @@ def check_mvp_kills():
             for row in rows:
                 cols = [" ".join(td.text.split()) for td in row.find_all("td")]
                 
-                if len(cols) >= 4:
-                    if "Monster" in cols[0] or "MVP" in cols[0] or not cols[0]:
+                if len(cols) >= 3:
+                    # Skip table header rows
+                    text_blob = " ".join(cols).lower()
+                    if "monster" in text_blob or "killer" in text_blob or not cols[0]:
                         continue
 
                     mvp_name = cols[0]
-                    map_name = cols[1]
-                    killer_name = cols[2]
-                    respawn_text = cols[3]
-                    raw_time = cols[4] if len(cols) > 4 else cols[-1]
+                    map_name = cols[1] if len(cols) > 1 else "unknown_map"
+                    
+                    # Dynamically find which column contains the time (HH:MM:SS) and which is the killer
+                    raw_time = None
+                    killer_name = "Unknown"
+                    respawn_text = "N/A"
+
+                    for col in cols[2:]:
+                        if re.search(r'\d{1,2}:\d{2}:\d{2}', col):
+                            raw_time = col
+                            break
+                    
+                    # If we found a time column, isolate elements around it
+                    if raw_time:
+                        time_index = cols.index(raw_time)
+                        if time_index >= 2:
+                            killer_name = cols[time_index - 1]
+                        if time_index >= 3:
+                            respawn_text = cols[time_index - 2]
+                    else:
+                        # Fallback to standard layout indexing if regex fails
+                        killer_name = cols[2] if len(cols) > 2 else "Unknown"
+                        respawn_text = cols[3] if len(cols) > 3 else "N/A"
+                        raw_time = cols[4] if len(cols) > 4 else cols[-1]
 
                     parsed_dt = get_gmt8_from_scraped_time(raw_time)
                     
@@ -278,8 +299,6 @@ def check_mvp_kills():
             if warmup_mvp:
                 warmup_mvp = False
                 logging.info(f"✅ Initial warm-up complete. Scraped {len(mvp_database)} active MVPs into database.")
-
-            logging.info(f"📊 Processed {parsed_count} entries. Alerts sent: {new_alerts_sent}")
 
     except Exception as e:
         logging.error(f"Error checking MVP kills: {e}")
