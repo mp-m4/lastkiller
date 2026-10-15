@@ -13,8 +13,10 @@ import discord
 # ==========================================
 # CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
+# Configure two separate Webhook URLs for different servers/channels
+DISCORD_WEBHOOK_1 = os.environ.get("DISCORD_WEBHOOK_1", "")
+DISCORD_WEBHOOK_2 = os.environ.get("DISCORD_WEBHOOK_2", "")
+
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 CACHE_FILE = "seen_kills.txt"
@@ -173,22 +175,25 @@ def run_web_server():
     httpd.serve_forever()
 
 # ==========================================
-# DISCORD WEBHOOK ALERT HELPER
+# MULTI-SERVER DISCORD WEBHOOK ALERT HELPER
 # ==========================================
 def send_discord_alert(content, embeds=None):
-    webhook_url = DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK
-    if not webhook_url:
+    # Collect all configured webhooks
+    webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
+    
+    if not webhooks:
         return
 
     payload = {"content": content}
     if embeds:
         payload["embeds"] = embeds
 
-    try:
-        response = session.post(webhook_url, json=payload, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        logging.error(f"❌ Failed to send Discord alert: {e}")
+    for url in webhooks:
+        try:
+            response = session.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            logging.error(f"❌ Failed to send alert to webhook ({url[:35]}...): {e}")
 
 # ==========================================
 # MVP SCRAPER LOOP
