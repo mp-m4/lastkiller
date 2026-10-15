@@ -35,7 +35,7 @@ adapter = requests.adapters.HTTPAdapter(max_retries=3)
 session.mount('https://', adapter)
 session.mount('http://', adapter)
 
-# Load existing kill history from disk to prevent duplicate alerts on reboot
+# Load existing kill history from disk cache
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
@@ -58,13 +58,22 @@ def save_cache():
 # HELPER FUNCTIONS
 # ==========================================
 def get_gmt8_from_scraped_time(time_str):
-    """Parses scraped time HH:MM:SS and offsets by +8 hours for Philippines local time (GMT+8)."""
+    """Parses raw HH:MM:SS string from site and correctly aligns with GMT+8."""
     time_match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', time_str)
     if time_match:
         h, m, s = map(int, time_match.groups())
-        now = datetime.utcnow()
-        scraped_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
-        return scraped_dt + timedelta(hours=8)
+        now_utc = datetime.utcnow()
+        scraped_dt = now_utc.replace(hour=h, minute=m, second=s, microsecond=0)
+        
+        # Calculate offset target in GMT+8
+        gmt8_dt = scraped_dt + timedelta(hours=8)
+        
+        # Handle midnight rollover edge case
+        if gmt8_dt > (now_utc + timedelta(hours=8.5)):
+            gmt8_dt -= timedelta(days=1)
+            
+        return gmt8_dt
+
     return datetime.utcnow() + timedelta(hours=8)
 
 def parse_duration_to_minutes(text):
@@ -77,9 +86,9 @@ def parse_duration_to_minutes(text):
 
 def calculate_spawn_range_dts(death_dt_gmt8, respawn_text):
     """Calculates min and max spawn datetime objects."""
-    if not respawn_text or "N/A" in respawn_text.upper():
-        est_dt = death_dt_gmt8 + timedelta(minutes=60)
-        return est_dt, est_dt
+    if not respawn_text or "N/A" in respawn_text.upper() or respawn_text.strip() == "0 min":
+        # Immediate or unknown respawn -> minimum delay is 0
+        return death_dt_gmt8, death_dt_gmt8
 
     parts = respawn_text.split("-")
     if len(parts) == 2:
@@ -87,7 +96,7 @@ def calculate_spawn_range_dts(death_dt_gmt8, respawn_text):
         max_delay = parse_duration_to_minutes(parts[1])
         return death_dt_gmt8 + timedelta(minutes=min_delay), death_dt_gmt8 + timedelta(minutes=max_delay)
     else:
-        delay = parse_duration_to_minutes(respawn_text) or 60
+        delay = parse_duration_to_minutes(respawn_text) or 0
         spawn_dt = death_dt_gmt8 + timedelta(minutes=delay)
         return spawn_dt, spawn_dt
 
@@ -113,18 +122,18 @@ async def on_message(message):
     if message.author == bot_client.user:
         return
 
-    # Debug log to watch incoming channel activity on Render
+    # Debug log
     logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
 
     raw_content = message.content.strip().lower()
 
-    # Strip leading command prefixes like ! or ?
+    # Strip command prefixes (! or ?)
     query = raw_content.lstrip("!?").strip()
 
     if len(query) < 3:
-        return  # Ignore short queries to prevent accidental triggers
+        return
 
-    # Case-insensitive fuzzy search against stored MVP names
+    # Case-insensitive fuzzy search
     matched_mvp = None
     for mvp_key in mvp_database.keys():
         if query in mvp_key.lower():
@@ -135,8 +144,8 @@ async def on_message(message):
         data = mvp_database[matched_mvp]
         now_gmt8 = datetime.utcnow() + timedelta(hours=8)
         
-        # Calculate whether window has opened
-        if now_gmt8 >= data["max_spawn_dt"]:
+        # Turn GREEN as soon as current time reaches or passes min_spawn_dt
+        if now_gmt8 >= data["min_spawn_dt"]:
             status_str = "🟢 **ALIVE / WINDOW OPEN**"
             color_code = 3066993  # Green
         else:
@@ -157,7 +166,7 @@ async def on_message(message):
         logging.info(f"✅ Replied with status embed for '{matched_mvp}'")
     else:
         if len(mvp_database) > 0:
-            logging.info(f"⚠️ Query '{query}' did not match any MVP in database. Sample available keys: {list(mvp_database.keys())[:3]}")
+            logging.info(f"⚠️ Query '{query}' did not match any MVP in database.")
 
 def run_discord_bot():
     if DISCORD_BOT_TOKEN:
@@ -230,7 +239,7 @@ def check_mvp_kills():
                     min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
                     est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
 
-                    # Save / update in-memory state for interactive searches
+                    # Update internal state database
                     mvp_database[mvp_name] = {
                         "killer_name": killer_name,
                         "map_name": map_name,
@@ -287,11 +296,11 @@ if __name__ == "__main__":
     print("   MuhRO MVP Tracker & Interactive Discord Bot")
     print("==================================================")
 
-    # 1. Start Keep-Alive Web Server
+    # 1. Keep-Alive Web Server
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # 2. Start Scraper Loop
+    # 2. Scraper Loop
     threading.Thread(target=run_scraper_loop, daemon=True).start()
 
-    # 3. Start Discord Bot Client
+    # 3. Discord Bot Client
     run_discord_bot()
