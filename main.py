@@ -14,12 +14,13 @@ import discord
 # CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 MVP_LOG_URL = "https://flux.muhro.eu/?module=ranking&action=mvp"
 CACHE_FILE = "seen_kills.txt"
 
-# Force specific MVPs to always display as ALIVE / WINDOW OPEN
-ALWAYS_ALIVE_OVERLOADS = ["boss pitaya"]
+# Force specific MVPs to always display as ALIVE / WINDOW OPEN (Keep empty for automated tracking)
+ALWAYS_ALIVE_OVERLOADS = []
 
 # State Tracking
 seen_mvp_kills = set()
@@ -134,7 +135,7 @@ async def on_message(message):
         data = mvp_database[matched_mvp]
         now_gmt8 = datetime.utcnow() + timedelta(hours=8)
         
-        # Override check or min_spawn_dt window check
+        # Turn GREEN as soon as current time reaches or passes min_spawn_dt
         if matched_mvp.lower() in ALWAYS_ALIVE_OVERLOADS or now_gmt8 >= data["min_spawn_dt"]:
             status_str = "🟢 **ALIVE / WINDOW OPEN**"
             color_code = 3066993  # Green
@@ -175,7 +176,8 @@ def run_web_server():
 # DISCORD WEBHOOK ALERT HELPER
 # ==========================================
 def send_discord_alert(content, embeds=None):
-    if not DISCORD_WEBHOOK_URL:
+    webhook_url = DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK
+    if not webhook_url:
         return
 
     payload = {"content": content}
@@ -183,7 +185,7 @@ def send_discord_alert(content, embeds=None):
         payload["embeds"] = embeds
 
     try:
-        response = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        response = session.post(webhook_url, json=payload, timeout=10)
         response.raise_for_status()
     except Exception as e:
         logging.error(f"❌ Failed to send Discord alert: {e}")
