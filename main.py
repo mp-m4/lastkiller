@@ -114,8 +114,6 @@ async def on_message(message):
     if message.author == bot_client.user or message.author.bot:
         return
 
-    logging.info(f"📩 RECEIVED MESSAGE: '{message.content}' from {message.author} in #{message.channel}")
-
     raw_content = message.content.strip().lower()
     query = raw_content.lstrip("!?").strip()
 
@@ -124,13 +122,13 @@ async def on_message(message):
 
     matched_mvp = None
     
-    # 1. Try exact or substring match first
+    # 1. Exact or substring match
     for mvp_key in mvp_database.keys():
         if query in mvp_key.lower() or mvp_key.lower() in query:
             matched_mvp = mvp_key
             break
 
-    # 2. Fallback to multi-word matching
+    # 2. Multi-word fallback match
     if not matched_mvp:
         query_words = query.split()
         for mvp_key in mvp_database.keys():
@@ -162,8 +160,6 @@ async def on_message(message):
         
         await message.channel.send(embed=embed)
         logging.info(f"✅ Replied with status embed for matched MVP: '{matched_mvp}'")
-    else:
-        logging.warning(f"⚠️ No MVP found matching query: '{query}'.")
 
 def run_discord_bot():
     if DISCORD_BOT_TOKEN:
@@ -184,7 +180,6 @@ def run_web_server():
 def send_discord_alert(content, embeds=None):
     webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
     if not webhooks:
-        logging.error("❌ ERROR: No webhook URLs found in environment variables!")
         return
 
     payload = {"content": content}
@@ -199,7 +194,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP
+# MVP SCRAPER LOOP (ANCHOR-BASED PARSER)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -217,67 +212,70 @@ def check_mvp_kills():
             
             for row in rows:
                 cols = [td.text.strip() for td in row.find_all("td") if td.text.strip()]
-                
                 text_blob = " ".join(cols).lower()
+                
                 if not cols or "monster" in text_blob or "killer" in text_blob or "ranking" in text_blob:
                     continue
 
-                if len(cols) >= 4:
-                    mvp_name = cols[0]
-                    map_name = cols[1]
-                    respawn_text = cols[2]
-                    killer_name = cols[3]
-                    raw_time = cols[4] if len(cols) > 4 else cols[3]
+                # Anchor-based search: Find the column containing the timestamp pattern
+                time_idx = -1
+                raw_time = None
+                for idx, col in enumerate(cols):
+                    if re.search(r'\d{1,2}:\d{2}:\d{2}', col):
+                        time_idx = idx
+                        raw_time = col
+                        break
 
-                    parsed_dt = get_gmt8_from_scraped_time(raw_time)
+                if time_idx == -1 or not raw_time:
+                    continue
+
+                # Map fields relative to the timestamp position
+                mvp_name = cols[0]
+                map_name = cols[1] if len(cols) > 1 else "unknown"
+                respawn_text = cols[2] if len(cols) > 2 else "2 hours"
+                killer_name = cols[time_idx - 1] if time_idx >= 1 else "Unknown"
+
+                parsed_dt = get_gmt8_from_scraped_time(raw_time)
+                if parsed_dt is None:
+                    continue
+                
+                death_dt_gmt8 = parsed_dt
+                time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
+                min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
+                est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
+
+                kill_id = f"{mvp_name}_{time_of_death_str}"
+
+                mvp_database[mvp_name] = {
+                    "killer_name": killer_name,
+                    "map_name": map_name,
+                    "time_of_death_str": time_of_death_str,
+                    "death_dt_gmt8": death_dt_gmt8,
+                    "est_spawn_str": est_spawn_str,
+                    "min_spawn_dt": min_spawn_dt,
+                    "max_spawn_dt": max_spawn_dt
+                }
+
+                parsed_count += 1
+
+                if kill_id not in seen_mvp_kills:
+                    seen_mvp_kills.add(kill_id)
                     
-                    if parsed_dt is None:
-                        if mvp_name in mvp_database:
-                            continue
-                        else:
-                            death_dt_gmt8 = datetime.utcnow() + timedelta(hours=8)
-                    else:
-                        death_dt_gmt8 = parsed_dt
-
-                    time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
-                    min_spawn_dt, max_spawn_dt = calculate_spawn_range_dts(death_dt_gmt8, respawn_text)
-                    est_spawn_str = format_spawn_range_str(min_spawn_dt, max_spawn_dt)
-
-                    if mvp_name in mvp_database and mvp_database[mvp_name]["time_of_death_str"] == time_of_death_str:
-                        parsed_count += 1
-                        continue
-
-                    mvp_database[mvp_name] = {
-                        "killer_name": killer_name,
-                        "map_name": map_name,
-                        "time_of_death_str": time_of_death_str,
-                        "death_dt_gmt8": death_dt_gmt8,
-                        "est_spawn_str": est_spawn_str,
-                        "min_spawn_dt": min_spawn_dt,
-                        "max_spawn_dt": max_spawn_dt
-                    }
-
-                    parsed_count += 1
-                    kill_id = f"{mvp_name}_{time_of_death_str}"
-
-                    if kill_id not in seen_mvp_kills:
-                        seen_mvp_kills.add(kill_id)
-                        
-                        if not warmup_mvp:
-                            new_alerts_sent += 1
-                            logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name}")
-                            embed = [{
-                                "title": "⚔️ MVP Down!",
-                                "color": 15158332,
-                                "fields": [
-                                    {"name": "MVP", "value": mvp_name, "inline": True},
-                                    {"name": "Killed By", "value": killer_name, "inline": True},
-                                    {"name": "Map", "value": map_name, "inline": True},
-                                    {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
-                                    {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
-                                ]
-                            }]
-                            send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
+                    if not warmup_mvp:
+                        new_alerts_sent += 1
+                        logging.info(f"🎯 NEW KILL DETECTED: {mvp_name} on {map_name} by {killer_name} at {raw_time}")
+                        embed = [{
+                            "title": "⚔️ MVP Down!",
+                            "color": 15158332,
+                            "fields": [
+                                {"name": "MVP", "value": mvp_name, "inline": True},
+                                {"name": "Killed By", "value": killer_name, "inline": True},
+                                {"name": "Map", "value": map_name, "inline": True},
+                                {"name": "Time of Death (GMT+8)", "value": time_of_death_str, "inline": False},
+                                {"name": "Est. Spawn Window (GMT+8)", "value": est_spawn_str, "inline": False}
+                            ]
+                        }]
+                        send_discord_alert("🏆 **MuhRO MVP Kill Logged**", embed)
 
             save_cache()
 
