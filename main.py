@@ -181,7 +181,7 @@ def send_discord_alert(content, embeds=None):
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (IMMUTABLE RECORD PARSER)
+# MVP SCRAPER LOOP (LOCKED IMMUTABLE RECORD)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -215,8 +215,8 @@ def check_mvp_kills():
 
                     kill_id = f"{mvp_name}_{killer_name}_{map_name}"
 
-                    # Only register/initialize if this specific MVP & killer combination isn't already logged
-                    if mvp_name not in mvp_database or mvp_database[mvp_name]["killer_name"] != killer_name:
+                    # Lock the record permanently once initialized; never overwrite time of death for an active entry
+                    if mvp_name not in mvp_database:
                         death_dt_gmt8 = now_gmt8
                         time_of_death_str = death_dt_gmt8.strftime("%Y-%m-%d %H:%M:%S")
                         
