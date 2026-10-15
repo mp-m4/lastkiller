@@ -122,13 +122,11 @@ async def on_message(message):
 
     matched_mvp = None
     
-    # 1. Exact or substring match
     for mvp_key in mvp_database.keys():
         if query in mvp_key.lower() or mvp_key.lower() in query:
             matched_mvp = mvp_key
             break
 
-    # 2. Multi-word fallback match
     if not matched_mvp:
         query_words = query.split()
         for mvp_key in mvp_database.keys():
@@ -180,6 +178,7 @@ def run_web_server():
 def send_discord_alert(content, embeds=None):
     webhooks = [url for url in [DISCORD_WEBHOOK_1, DISCORD_WEBHOOK_2] if url.strip()]
     if not webhooks:
+        logging.error("❌ WEBHOOK ERROR: No webhook URLs found in environment variables!")
         return
 
     payload = {"content": content}
@@ -190,11 +189,12 @@ def send_discord_alert(content, embeds=None):
         try:
             response = session.post(url, json=payload, timeout=10)
             response.raise_for_status()
+            logging.info(f"🚀 Successfully sent Discord webhook alert!")
         except Exception as e:
             logging.error(f"❌ Failed to send alert to webhook: {e}")
 
 # ==========================================
-# MVP SCRAPER LOOP (ANCHOR-BASED PARSER)
+# MVP SCRAPER LOOP (WITH ROW DEBUGGER)
 # ==========================================
 def check_mvp_kills():
     global warmup_mvp
@@ -212,10 +212,11 @@ def check_mvp_kills():
             
             for row in rows:
                 cols = [td.text.strip() for td in row.find_all("td") if td.text.strip()]
-                text_blob = " ".join(cols).lower()
-                
-                if not cols or "monster" in text_blob or "killer" in text_blob or "ranking" in text_blob:
+                if not cols:
                     continue
+                
+                # DEBUG: Print columns of every row to inspect the parsed layout
+                logging.info(f"🔍 DEBUG ROW COLS: {cols}")
 
                 # Anchor-based search: Find the column containing the timestamp pattern
                 time_idx = -1
@@ -229,7 +230,6 @@ def check_mvp_kills():
                 if time_idx == -1 or not raw_time:
                     continue
 
-                # Map fields relative to the timestamp position
                 mvp_name = cols[0]
                 map_name = cols[1] if len(cols) > 1 else "unknown"
                 respawn_text = cols[2] if len(cols) > 2 else "2 hours"
